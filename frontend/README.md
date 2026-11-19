@@ -1,6 +1,6 @@
 # Kett
 
-基于 **Svelte 5 + TypeScript + Vite** 的纯前端 AI 对话界面。参考 Claude / Codex 的工作方式，采用暖白、陶土色与衬线标题，提供完整的英文界面与独立视觉设计。
+基于 **Svelte 5 + TypeScript + Vite** 的 AI 对话界面。回复为本地演示，Google 登录由 FastAPI 后端验证。
 
 ## 启动
 
@@ -46,15 +46,15 @@ npx playwright install chromium
 
 ## Google 登录
 
-默认无需配置。在 **Settings** 中点击 **Sign in**，可用演示账号走通登录和退出，不会联系 Google。
+默认在 **Settings** 中提供演示登录。演示不会联系 Google 或后端，也不会创建有效账号会话。真实登录的配置见 [项目 README](../README.md)。
 
-要启用真实 Google 登录，在 Google Cloud 创建 **Web application** 类型的 OAuth 客户端，并在 **Authorized JavaScript origins** 中添加访问前端的完整来源（例如 `http://localhost:5173`；如果用 `127.0.0.1` 访问，需要单独添加）。将客户端 ID 写入 `frontend/.env.local`，然后重启 Vite 或重新构建：
+真实登录通过 Google Identity Services 获取 ID Token 并交给后端验证，不在浏览器存储中保存令牌或用户资料。打开 **Settings** 时通过 `/api/auth/me` 检查会话；**Sign out** 会撤销当前 Kett 会话，不会退出 Google 账号。
 
-```dotenv
-VITE_GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+默认 `npm test` 在无配置时覆盖演示登录。要执行真实登录界面的测试，可用以下命令（Google SDK 和 API 均由测试模拟，不需要运行后端）：
+
+```bash
+VITE_GOOGLE_CLIENT_ID=test.apps.googleusercontent.com npm test -- tests/account.spec.ts
 ```
-
-弹窗流程不需要配置重定向 URI，也不需要客户端密钥。OAuth 令牌只用于读取 Google 个人资料，不会写入浏览器存储；只有显示名称保留在当前浏览器会话中。**Sign out** 只清除 Kett 的登录状态，不会退出 Google 账号。前端登录状态不用于后端认证或授权。
 
 ## 文件结构
 
@@ -65,7 +65,7 @@ src/
 ├── main.ts          # 应用入口
 └── lib/
     ├── Icon.svelte  # SVG 图标
-    ├── google-auth.ts # Google OAuth 弹窗和个人资料读取
+    ├── google-auth.ts # Google 登录按钮与后端会话 API
     └── demo.ts      # 数据类型、示例对话、本地回复和示例 HTML
 tests/
 └── workspace.spec.ts # 浏览器交互测试
@@ -73,7 +73,7 @@ tests/
 
 ## 演示边界
 
-**没有后端认证或 AI 服务。** 回复来自 `src/lib/demo.ts` 中的本地预设；思考模式不会调用模型。可下载的 HTML 是内置示例，而非动态生成的作品。附件不会上传，也不会解析。
+**未接入 AI 服务。** 回复来自 `src/lib/demo.ts` 中的本地预设；思考模式不会调用模型。可下载的 HTML 是内置示例，而非动态生成的作品。附件不会上传，也不会解析。
 
 对话内容仅保存在当前浏览器中，清理站点数据会将其删除。页面使用 Google Fonts 加载字体；字体不可用时会回退到系统字体，不影响功能。
 
