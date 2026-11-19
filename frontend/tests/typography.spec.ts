@@ -26,12 +26,7 @@ test('type sizes are 125% of the original across interface surfaces', async ({
     .getByRole('button', { name: 'Exploring Svelte 5', exact: true })
     .click();
   await expect(page.locator('.markdown')).toHaveCSS('font-size', '15px');
-  await page.getByRole('button', { name: 'Workbench', exact: true }).click();
-  await page
-    .getByRole('complementary', { name: 'Code workbench' })
-    .getByRole('button', { name: 'Code', exact: true })
-    .click();
-  await expect(page.locator('.artifact-code')).toHaveCSS('font-size', '12.5px');
+  await expect(page.locator('.markdown pre')).toHaveCSS('font-size', '12.5px');
 });
 
 test('larger type remains contained across desktop, tablet and mobile sizes', async ({
@@ -61,10 +56,8 @@ test('larger type remains contained across desktop, tablet and mobile sizes', as
     'font-size',
     '15px',
   );
-  await expect(page.locator('.welcome h1')).toHaveCSS('font-size', '52.5px');
-  await page
-    .getByRole('button', { name: 'Claude Sonnet 4.5', exact: true })
-    .click();
+  await expect(page.locator('.welcome h1')).toHaveCSS('font-size', '28px');
+  await page.getByRole('button', { name: 'Select model' }).click();
   const menu = await page.locator('.model-menu').boundingBox();
   expect(menu).not.toBeNull();
   expect(menu!.x).toBeGreaterThanOrEqual(0);

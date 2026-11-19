@@ -5,25 +5,42 @@ test.beforeEach(async ({ page }) => {
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
 });
 
-test('welcome, suggestions, model menu and keyboard composer', async ({
+test('new conversation, suggestions, empty model menu and keyboard composer', async ({
   page,
 }) => {
   await expect(page.locator('html')).toHaveAttribute('lang', 'en');
-  await expect(page).toHaveTitle('Kett — A space for possibility');
+  await expect(page).toHaveTitle('Kett');
+  await expect(page.getByRole('heading', { level: 1 })).toHaveText(
+    'New conversation',
+  );
+  await expect(page.getByRole('button', { name: 'Kett home' })).toHaveText(
+    /😅/,
+  );
+  await expect(page.getByText('Only you', { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: 'Workbench', exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole('button', { name: 'Chat', exact: true }),
+  ).toHaveCount(0);
   await expect(
     page.getByRole('button', { name: 'Send message', exact: true }),
   ).toBeDisabled();
-  await page.getByRole('button', { name: /Make something new/ }).click();
+  await page.getByRole('button', { name: 'Design a website' }).click();
   await expect(page.getByRole('textbox', { name: 'Message Kett' })).toHaveValue(
     /coffee/,
   );
-  await page
-    .getByRole('button', { name: 'Claude Sonnet 4.5', exact: true })
-    .click();
-  await page.getByRole('button', { name: /Claude Opus 4.5/ }).click();
-  await expect(
-    page.getByRole('button', { name: 'Claude Opus 4.5', exact: true }),
-  ).toBeVisible();
+  const modelButton = page.getByRole('button', { name: 'Select model' });
+  const modelMenu = page.locator('.model-menu');
+  await modelButton.click();
+  await expect(modelButton).toHaveAttribute('aria-expanded', 'true');
+  await expect(modelMenu).toHaveText('No models available');
+  await expect(modelMenu.getByRole('button')).toHaveCount(0);
+  await page.keyboard.press('Escape');
+  await expect(modelButton).toHaveAttribute('aria-expanded', 'false');
+  await modelButton.click();
+  await page.getByRole('textbox', { name: 'Message Kett' }).click();
+  await expect(modelMenu).toHaveCount(0);
   await page
     .getByRole('textbox', { name: 'Message Kett' })
     .press('Shift+Enter');
@@ -116,39 +133,47 @@ test('creates a local project and starts a scoped conversation', async ({
   );
 });
 
-test('workbench previews HTML, shows source and downloads the artifact', async ({
+test('downloads sample HTML directly from the conversation', async ({
   page,
 }) => {
-  await page.getByRole('button', { name: 'Workbench', exact: true }).click();
-  const workbench = page.getByRole('complementary', { name: 'Code workbench' });
-  await expect(workbench).toBeVisible();
-  await expect(
-    page.frameLocator('iframe').getByRole('heading', { level: 1 }),
-  ).toContainText('A slower pace.');
-  await page.screenshot({ path: 'test-results/workbench-desktop.png' });
-  await workbench.getByRole('button', { name: 'Code', exact: true }).click();
-  await expect(page.locator('.artifact-code')).toContainText('<!doctype html>');
+  await page.getByRole('button', { name: 'Design a website' }).click();
+  await page.getByRole('button', { name: 'Send message', exact: true }).click();
+  const download = page
+    .getByRole('log')
+    .getByRole('button', { name: 'Download HTML' });
+  await expect(download).toBeVisible({ timeout: 12000 });
   const downloadPromise = page.waitForEvent('download');
-  await page
-    .getByRole('button', { name: 'Download HTML', exact: true })
-    .click();
+  await download.click();
   expect((await downloadPromise).suggestedFilename()).toBe(
     'slow-isle-cafe.html',
   );
-  await page.getByRole('button', { name: 'Close workbench' }).click();
-  await expect(workbench).toHaveCount(0);
+  await expect(page.locator('iframe')).toHaveCount(0);
 });
 
-test('theme persists and clearing history requires confirmation', async ({
+test('header theme persists and settings show signed-out status', async ({
   page,
 }) => {
-  await page.getByRole('button', { name: 'Open workspace settings' }).click();
-  await page.getByRole('switch', { name: 'Dark appearance' }).click();
+  const theme = page
+    .locator('.topbar')
+    .getByRole('button', { name: 'Dark appearance' });
+  await expect(theme).toHaveAttribute('aria-pressed', 'false');
+  await theme.click();
   await expect(page.locator('.app-shell')).toHaveClass(/dark/);
-  await page.keyboard.press('Escape');
   await page.screenshot({ path: 'test-results/welcome-dark.png' });
   await page.reload();
+  await expect(theme).toHaveAttribute('aria-pressed', 'true');
   await expect(page.locator('.app-shell')).toHaveClass(/dark/);
+  await theme.click();
+  await expect(page.locator('.app-shell')).not.toHaveClass(/dark/);
+  await page.getByRole('button', { name: 'Open workspace settings' }).click();
+  const settings = page.getByRole('dialog', { name: 'Workspace settings' });
+  await expect(settings.getByText('Not signed in')).toBeVisible();
+  await expect(settings.getByText('Lin', { exact: true })).toHaveCount(0);
+  await expect(settings.getByText(/your own little space/i)).toHaveCount(0);
+  await expect(settings.getByLabel('Dark appearance')).toHaveCount(0);
+});
+
+test('clearing history requires confirmation', async ({ page }) => {
   await page.getByRole('button', { name: 'Open workspace settings' }).click();
   await page.getByRole('button', { name: 'Clear', exact: true }).click();
   await expect(page.locator('.history-item')).toHaveCount(3);
@@ -203,11 +228,9 @@ test('mobile layout, drawer navigation and composer stay within the viewport', a
   await expect(
     page.getByRole('textbox', { name: 'Message Kett' }),
   ).toBeInViewport();
-  await page.getByRole('button', { name: 'Workbench', exact: true }).click();
   await expect(
-    page.getByRole('complementary', { name: 'Code workbench' }),
+    page.getByRole('button', { name: 'Dark appearance' }),
   ).toBeInViewport();
-  await page.getByRole('button', { name: 'Close workbench' }).click();
 });
 
 test('markdown from stored conversations is sanitized', async ({ page }) => {

@@ -21,29 +21,23 @@ export interface Conversation {
 export const suggestions = [
   {
     icon: 'spark',
-    title: 'Make something new',
-    text: 'Turn a little spark into something real.',
+    title: 'Design a website',
     prompt:
       'Design a minimal coffee brand website that feels warm, natural, and a little unexpected.',
-    tag: 'Ideas & creation',
     color: 'peach',
   },
   {
     icon: 'brain',
-    title: 'Untangle a thought',
-    text: 'Find a fresh perspective on a tricky idea.',
+    title: 'Build a learning plan',
     prompt:
       'Help me build a learning plan I can actually stick to. Break it down and help me find a manageable place to start.',
-    tag: 'Thinking & planning',
     color: 'sage',
   },
   {
     icon: 'code',
-    title: 'Take your code further',
-    text: 'Build, debug, and explore what comes next.',
+    title: 'Write a Svelte component',
     prompt:
       'Write a simple Svelte to-do component with support for adding, completing, and deleting tasks. Explain the key implementation details.',
-    tag: 'Code & building',
     color: 'lavender',
   },
 ];
@@ -167,7 +161,7 @@ This is preset demo code. Copy it into your Svelte project and make it your own.
     return {
       artifact: true,
       content:
-        'I would sum up this direction as: **Slow down. Let good things happen.**\n\nRather than adding more to catch the eye, use space, texture, and a few well-chosen words to make people want to stay.\n\n### The design direction\n\n- **Colors**: oat white, espresso brown, and a little olive green.\n- **Typography**: generous serif headlines with quiet, considered supporting text.\n- **Details**: an illustrated coffee cup, soft corners, and a paper-like warmth.\n\nI have prepared a one-page website example. Open the **Workbench** to preview it, explore the source, or download the HTML file.\n\nThis is a built-in frontend demo, not a live AI-generated result. Treat it as a starting point for your own ideas.',
+        'I would sum up this direction as: **Slow down. Let good things happen.**\n\nRather than adding more to catch the eye, use space, texture, and a few well-chosen words to make people want to stay.\n\n### The design direction\n\n- **Colors**: oat white, espresso brown, and a little olive green.\n- **Typography**: generous serif headlines with quiet, considered supporting text.\n- **Details**: an illustrated coffee cup, soft corners, and a paper-like warmth.\n\nUse **Download HTML** below to save the sample website.\n\nThis is a built-in frontend demo, not a live AI-generated result. Treat it as a starting point for your own ideas.',
     };
   }
   if (

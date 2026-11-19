@@ -26,12 +26,10 @@
   let projects = $state(['Personal website', 'Ideas & inspiration']);
   let selectedProject = $state('');
   let dark = $state(false);
-  let model = $state('Claude Sonnet 4.5');
+  let model = $state<string | null>(null);
   let modelMenu = $state(false);
   let thinking = $state(false);
   let streaming = $state(false);
-  let workbench = $state(false);
-  let previewTab = $state<'preview' | 'code'>('preview');
   let attachments = $state<Attachment[]>([]);
   let notification = $state('');
   let copiedId = $state('');
@@ -43,7 +41,7 @@
   let streamTimer: ReturnType<typeof setInterval> | undefined;
   let toastTimer: ReturnType<typeof setTimeout>;
   let copyTimer: ReturnType<typeof setTimeout>;
-  const models = ['Claude Sonnet 4.5', 'Claude Opus 4.5', 'GPT-5.2'];
+  const models: string[] = [];
   const active = $derived(conversations.find((c) => c.id === activeId));
   const messages = $derived(active?.messages ?? []);
   const filtered = $derived(
@@ -138,7 +136,7 @@
     input = '';
     attachments = [];
     selectedProject = project;
-    workbench = false;
+    modelMenu = false;
     mobileSidebar = false;
     tick().then(() => textarea?.focus());
   }
@@ -151,7 +149,7 @@
     selectedProject = conversations.find((c) => c.id === id)?.project ?? '';
     searchOpen = false;
     mobileSidebar = false;
-    workbench = false;
+    modelMenu = false;
     tick().then(scrollBottom);
   }
 
@@ -376,10 +374,8 @@
   >
     <div class="sidebar-top">
       <button class="brand" onclick={() => newChat()} aria-label="Kett home">
-        <span class="brand-mark">
-          <span></span><span></span><span></span><span></span>
-        </span>
-        <span class="brand-name">kett<span class="brand-dot">.</span></span>
+        <span class="brand-mark" aria-hidden="true">😅</span>
+        <span class="brand-name">kett</span>
       </button>
       <button
         class="icon-button sidebar-hide"
@@ -395,11 +391,7 @@
     </div>
 
     <button class="new-chat" onclick={() => newChat()}>
-      <Icon name="plus" size={18} /><span>New conversation</span><span
-        class="new-shortcut"
-      >
-        ↗
-      </span>
+      <Icon name="plus" size={18} /><span>New conversation</span>
     </button>
     <nav class="primary-nav" aria-label="Workspace navigation">
       <button
@@ -445,38 +437,20 @@
         {/if}
       {/each}
       {#if !conversations.length}<p class="empty-history">
-          No conversations yet.<br />Start with a little idea.
+          No conversations yet.
         </p>{/if}
-      <div class="sidebar-note">
-        <span class="note-line"></span>
-        <p>A little room to think.<br />A little space to grow.</p>
-        <Icon name="leaf" size={25} />
-      </div>
     </div>
 
     <div class="sidebar-bottom">
       <button
-        class="local-banner"
-        onclick={() =>
-          notify(
-            'Frontend demo · Conversations stay in this browser, never sent to a server',
-          )}
-      >
-        <span class="status-dot"></span><span>Local demo workspace</span><Icon
-          name="external"
-          size={13}
-        />
-      </button>
-      <button
-        class="profile"
+        class="settings-button"
         aria-label="Open workspace settings"
-        onclick={() => (settingsOpen = true)}
+        onclick={() => {
+          clearConfirm = false;
+          settingsOpen = true;
+        }}
       >
-        <span class="avatar">L<span></span></span><span class="profile-text">
-          <strong>Lin</strong><span>
-            Personal workspace <Icon name="down" size={11} />
-          </span>
-        </span><Icon name="settings" size={17} />
+        <Icon name="settings" size={18} /> Settings
       </button>
     </div>
   </aside>
@@ -495,30 +469,18 @@
         >
           <Icon name="panel" size={19} />
         </button>
-        <span class="workspace-icon">
-          <Icon name={selectedProject ? 'folder' : 'grid'} size={15} />
-        </span><span>{selectedProject || 'Personal space'}</span><span
-          class="breadcrumb-slash"
-        >
-          /
-        </span><span class="breadcrumb-current">
-          {active ? active.title : 'New conversation'}
-        </span>
+        {#if selectedProject}
+          <Icon name="folder" size={15} />
+          <span class="breadcrumb-project">{selectedProject}</span>
+        {/if}
+        {#if active}
+          {#if selectedProject}
+            <span class="breadcrumb-slash" aria-hidden="true">/</span>
+          {/if}
+          <span class="breadcrumb-current">{active.title}</span>
+        {/if}
       </div>
       <div class="header-actions">
-        <span class="private-label">
-          <span class="status-dot"></span>Only you
-        </span>
-        <div class="view-switch">
-          <button class:chosen={!workbench} onclick={() => (workbench = false)}>
-            <Icon name="chat" size={14} /><span>Chat</span>
-          </button><button
-            class:chosen={workbench}
-            onclick={() => (workbench = true)}
-          >
-            <Icon name="code" size={15} /><span>Workbench</span>
-          </button>
-        </div>
         {#if active}<button
             class="icon-button export-chat"
             title="Export conversation"
@@ -536,65 +498,37 @@
           >
             <Icon name="download" size={17} />
           </button>{/if}
+        <button
+          class="icon-button theme-button"
+          aria-label="Dark appearance"
+          aria-pressed={dark}
+          title={dark ? 'Switch to light theme' : 'Switch to dark theme'}
+          onclick={() => (dark = !dark)}
+        >
+          <Icon name={dark ? 'sun' : 'moon'} size={18} />
+        </button>
       </div>
     </header>
 
-    <div class="workspace-body" class:with-workbench={workbench}>
-      <section
-        class="conversation-pane"
-        class:has-messages={messages.length > 0}
-        aria-label="Chat area"
-      >
+    <div class="workspace-body">
+      <section class="conversation-pane" aria-label="Chat area">
         {#if !messages.length}
           <div class="welcome-scroll">
             <div class="welcome">
-              <div class="welcome-eyebrow">
-                <span class="tiny-sun">✳</span><span>
-                  YOUR SPACE TO THINK
-                </span><span class="eyebrow-line"></span>
-              </div>
-              <h1>
-                A little clarity.<br />A lot of
-                <span class="headline-accent">
-                  possibility<svg
-                    class="headline-scribble"
-                    viewBox="0 0 150 12"
-                    aria-hidden="true"
-                  >
-                    <path d="M3 8C40 0 100 2 147 6M24 10c35-4 72-3 99-1" />
-                  </svg>
-                </span>.
-              </h1>
-              <p class="welcome-description">
-                A question, a line of code, or an idea still taking shape.<br
-                  class="desktop-break"
-                />Wherever you start, let's take the next step together.
-              </p>
-              <div class="welcome-composer-slot">
-                {@render composer()}
-              </div>
-              <div class="suggestions-header">
-                <span>A few places to begin</span><span class="suggestions-line"
-                ></span><Icon name="spark" size={13} />
-              </div>
+              <h1>New conversation</h1>
+              {@render composer()}
+              <h2 class="suggestions-header">Suggested prompts</h2>
               <div class="suggestions">
                 {#each suggestions as suggestion}<button
                     class="suggestion-card {suggestion.color}"
                     onclick={() => useSuggestion(suggestion.prompt)}
                   >
-                    <span class="suggestion-top">
-                      <span class="suggestion-icon">
-                        <Icon name={suggestion.icon} size={19} />
-                      </span><span class="suggestion-arrow">↗</span>
-                    </span><strong>{suggestion.title}</strong>
-                    <p>{suggestion.text}</p>
-                    <span class="suggestion-tag">{suggestion.tag}</span>
+                    <span class="suggestion-icon">
+                      <Icon name={suggestion.icon} size={19} />
+                    </span>
+                    <strong>{suggestion.title}</strong>
                   </button>{/each}
               </div>
-              <p class="welcome-footnote">
-                <Icon name="leaf" size={14} /> You don't need all the answers. Just
-                a beginning.
-              </p>
             </div>
           </div>
         {:else}
@@ -606,21 +540,20 @@
             aria-busy={streaming}
           >
             <div class="message-list">
-              <div class="conversation-date">A little time for a good idea</div>
               {#each messages as message (message.id)}
                 <article class="message {message.role}">
-                  <div class="message-avatar">
-                    {#if message.role === 'user'}L{:else}<span
-                        class="assistant-sun"
-                      >
-                        ✳
-                      </span>{/if}
+                  <div class="message-avatar" aria-hidden="true">
+                    {#if message.role === 'user'}<Icon
+                        name="user"
+                        size={16}
+                      />{:else}
+                      <span class="assistant-emoji">😅</span>
+                    {/if}
                   </div>
                   <div class="message-body">
                     <div class="message-name">
-                      {message.role === 'user'
-                        ? 'You'
-                        : 'Kett'}{#if message.role === 'assistant'}<span>
+                      {message.role === 'user' ? 'You' : 'Kett'}
+                      {#if message.role === 'assistant' && model}<span>
                           {model}
                         </span>{/if}
                     </div>
@@ -642,16 +575,15 @@
                           <i></i><i></i><i></i>
                         </span>{/if}{/if}
                     {#if message.artifact}<button
-                        class="artifact-card"
-                        onclick={() => (workbench = true)}
+                        class="artifact-download"
+                        onclick={() =>
+                          download(
+                            artifactSource,
+                            'slow-isle-cafe.html',
+                            'text/html',
+                          )}
                       >
-                        <span class="artifact-icon">
-                          <Icon name="code" size={22} />
-                        </span><span>
-                          <strong>Slow Isle · Coffee website</strong><small>
-                            Website artifact · HTML / CSS
-                          </small>
-                        </span><Icon name="external" size={17} />
+                        <Icon name="download" size={16} /> Download HTML
                       </button>{/if}
                     {#if message.role === 'assistant' && message.content && (!streaming || message.id !== messages.at(-1)?.id)}<div
                         class="message-actions"
@@ -682,7 +614,7 @@
                             onclick={retry}
                           >
                             <Icon name="refresh" size={15} />
-                          </button>{/if}<span>Local demo response</span>
+                          </button>{/if}
                       </div>{/if}
                   </div>
                 </article>
@@ -691,89 +623,9 @@
           </div>
           <div class="chat-composer">
             {@render composer()}
-            <div class="chat-disclaimer">
-              <span class="status-dot"></span>Frontend demo · No AI connected ·
-              Saved on this device
-            </div>
           </div>
         {/if}
-        {#if !messages.length}<footer class="main-footer">
-            <span>KETT / A SPACE FOR POSSIBILITY</span><span>
-              Frontend demo <span class="footer-dot">·</span> Stored locally
-            </span>
-          </footer>{/if}
       </section>
-
-      {#if workbench}
-        <aside class="workbench" aria-label="Code workbench">
-          <div class="workbench-heading">
-            <span>
-              <span class="workbench-dot"></span>Slow Isle · Brand website
-              <span class="demo-badge">DEMO</span>
-            </span><button
-              class="icon-button"
-              aria-label="Close workbench"
-              onclick={() => (workbench = false)}
-            >
-              <Icon name="close" size={17} />
-            </button>
-          </div>
-          <div class="workbench-toolbar">
-            <div class="preview-tabs">
-              <button
-                class:active={previewTab === 'preview'}
-                onclick={() => (previewTab = 'preview')}
-              >
-                <Icon name="grid" size={13} />Preview
-              </button><button
-                class:active={previewTab === 'code'}
-                onclick={() => (previewTab = 'code')}
-              >
-                <Icon name="code" size={14} />Code
-              </button>
-            </div>
-            <div>
-              <button
-                class="icon-button"
-                aria-label="Copy source"
-                title="Copy source"
-                onclick={() => copy(artifactSource, 'artifact')}
-              >
-                <Icon
-                  name={copiedId === 'artifact' ? 'check' : 'copy'}
-                  size={15}
-                />
-              </button><button
-                class="icon-button"
-                aria-label="Download HTML"
-                title="Download HTML"
-                onclick={() =>
-                  download(artifactSource, 'slow-isle-cafe.html', 'text/html')}
-              >
-                <Icon name="download" size={16} />
-              </button>
-            </div>
-          </div>
-          {#if previewTab === 'preview'}<div class="browser-bar">
-              <span class="browser-dots"><i></i><i></i><i></i></span><span>
-                <Icon name="file" size={11} /> slow-isle-cafe / index.html
-              </span><Icon name="refresh" size={12} />
-            </div>
-            <iframe
-              title="Slow Isle coffee website preview"
-              srcdoc={artifactSource}
-              sandbox=""
-            ></iframe>{:else}<div class="code-filename">
-              <Icon name="code" size={14} />index.html<span>HTML</span>
-            </div>
-            <pre class="artifact-code"><code>{artifactSource}</code></pre>{/if}
-          <div class="workbench-footer">
-            <span class="status-dot"></span>Static preview · No dependencies<span>
-              HTML / CSS
-            </span>
-          </div>
-        </aside>
-      {/if}
     </div>
   </main>
   <input
@@ -814,7 +666,7 @@
           <div class="search-input-row">
             <Icon name="search" size={21} /><input
               aria-label="Search conversation titles"
-              placeholder="Search your ideas and conversations…"
+              placeholder="Search conversations"
               bind:value={search}
             /><button class="key-button" onclick={() => (searchOpen = false)}>
               Esc
@@ -829,7 +681,8 @@
             {#each filtered as chat}<button onclick={() => openChat(chat.id)}>
                 <Icon name="chat" size={18} /><span>
                   {chat.title}<small>
-                    {chat.project || 'Personal space'} · {chat.messages.length}
+                    {#if chat.project}{chat.project} ·
+                    {/if}{chat.messages.length}
                     {chat.messages.length === 1 ? 'message' : 'messages'}
                   </small>
                 </span><Icon name="chevron" size={15} />
@@ -839,15 +692,9 @@
                 <span>Try another keyword or start a new conversation.</span>
               </div>{/if}
           </div>
-          <div class="search-footer">
-            Conversations stay in this browser <span>⌘ / Ctrl + K</span>
-          </div>
         {:else if projectsOpen}
           <div class="modal-heading">
-            <div>
-              <span class="modal-eyebrow">MAKE ROOM FOR YOUR IDEAS</span>
-              <h2>My projects</h2>
-            </div>
+            <h2>My projects</h2>
             <button
               class="icon-button"
               aria-label="Close projects"
@@ -856,9 +703,6 @@
               <Icon name="close" />
             </button>
           </div>
-          <p class="modal-description">
-            A home for related ideas, with room for inspiration to grow.
-          </p>
           <div class="project-list">
             {#each projects as project, index}{@const count =
                 conversations.filter(
@@ -884,7 +728,7 @@
             <input
               bind:value={projectName}
               maxlength={32}
-              placeholder="Name your new project"
+              placeholder="Project name"
               aria-label="New project name"
             /><button class="primary-button" disabled={!projectName.trim()}>
               <Icon name="plus" size={16} />Create project
@@ -892,10 +736,7 @@
           </form>
         {:else}
           <div class="modal-heading">
-            <div>
-              <span class="modal-eyebrow">YOUR OWN LITTLE SPACE</span>
-              <h2>Workspace settings</h2>
-            </div>
+            <h2>Workspace settings</h2>
             <button
               class="icon-button"
               aria-label="Close settings"
@@ -904,31 +745,8 @@
               <Icon name="close" />
             </button>
           </div>
-          <div class="settings-profile">
-            <span class="avatar">L</span>
-            <div>
-              <strong>Lin</strong>
-              <p>Personal workspace · Local demo</p>
-            </div>
-            <span class="settings-badge">LOCAL</span>
-          </div>
           <div class="setting-row">
-            <span>
-              <Icon name={dark ? 'moon' : 'sun'} size={19} /><span>
-                Dark appearance<small>
-                  A softer space for late-night ideas
-                </small>
-              </span>
-            </span><button
-              class:checked={dark}
-              class="toggle"
-              role="switch"
-              aria-checked={dark}
-              aria-label="Dark appearance"
-              onclick={() => (dark = !dark)}
-            >
-              <span></span>
-            </button>
+            <span><Icon name="user" size={18} /> Not signed in</span>
           </div>
           <div class="setting-row">
             <span>
@@ -951,13 +769,6 @@
               {clearConfirm ? 'Confirm clear?' : 'Clear'}
             </button>
           </div>
-          <div class="settings-about">
-            <span class="assistant-sun">✳</span><strong>
-              Kett <small>v1.0</small>
-            </strong>
-            <p>A little space for your next big idea.</p>
-            <span>Built with Svelte 5 · Frontend only · No sign-in</span>
-          </div>
         {/if}
       </div>
     </div>
@@ -970,7 +781,7 @@
 </div>
 
 {#snippet composer()}
-  <div class:focused={input.length > 0} class="composer">
+  <div class="composer">
     {#if attachments.length}<div class="attachment-list">
         {#each attachments as attachment, i}<div class="attachment">
             <Icon name="file" size={16} /><span>
@@ -990,7 +801,7 @@
       bind:value={input}
       onkeydown={inputKey}
       aria-label="Message Kett"
-      placeholder="What would you like to explore?"
+      placeholder="Message Kett"
       rows="2"
       maxlength={16000}></textarea>
     <div class="composer-toolbar">
@@ -1009,6 +820,7 @@
           class:enabled={thinking}
           class="thinking-button"
           aria-pressed={thinking}
+          aria-label="Thinking mode"
           title="Toggle thinking mode (demo)"
           onclick={() => {
             thinking = !thinking;
@@ -1020,7 +832,7 @@
           }}
         >
           <Icon name="brain" size={16} /><span>
-            Think deeper
+            Thinking mode
           </span>{#if thinking}<span class="thinking-dot"></span>{/if}
         </button>
       </div>
@@ -1031,33 +843,23 @@
             aria-expanded={modelMenu}
             onclick={() => (modelMenu = !modelMenu)}
           >
-            {model}<Icon name="down" size={13} />
+            {model ?? 'Select model'}<Icon name="down" size={13} />
           </button>
           {#if modelMenu}<div class="model-menu">
-              <div class="dropdown-caption">
-                Choose a model <span>Interface demo</span>
-              </div>
-              {#each models as item}<button
+              {#each models as item}
+                <button
+                  aria-pressed={model === item}
                   onclick={() => {
                     model = item;
                     modelMenu = false;
                   }}
                 >
-                  <span class="model-symbol">
-                    {item.startsWith('Claude') ? '✳' : '◎'}
-                  </span><span>
-                    {item}<small>
-                      {item.includes('Opus')
-                        ? 'Deeper thinking for complex tasks'
-                        : item.includes('GPT')
-                          ? 'Versatile reasoning and coding'
-                          : 'A balance of creativity, speed, and capability'}
-                    </small>
-                  </span>{#if model === item}<Icon
-                      name="check"
-                      size={15}
-                    />{/if}
-                </button>{/each}
+                  {item}
+                  {#if model === item}<Icon name="check" size={15} />{/if}
+                </button>
+              {:else}
+                <div class="dropdown-caption">No models available</div>
+              {/each}
             </div>{/if}
         </div>
         {#if streaming}<button
@@ -1080,9 +882,8 @@
     </div>
   </div>
   <div class="composer-hint">
+    <span>Local demo · No AI connected</span>
     <span>
-      <Icon name="paperclip" size={12} /> Words, code, and possibilities
-    </span><span>
       <kbd>Enter</kbd> to send <span class="hint-dot">·</span>
       <kbd>Shift + Enter</kbd> for a new line
     </span>
