@@ -3,6 +3,7 @@
   import { marked } from 'marked';
   import DOMPurify from 'dompurify';
   import Icon from './lib/Icon.svelte';
+  import { prepareGoogleSignIn } from './lib/google-auth';
   import {
     suggestions,
     seedConversations,
@@ -21,6 +22,14 @@
   let searchOpen = $state(false);
   let search = $state('');
   let settingsOpen = $state(false);
+  const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID?.trim();
+  const accountStorageKey = googleClientId
+    ? 'kett-google-profile-v1'
+    : 'kett-google-demo-v1';
+  let accountName = $state<string | null>(null);
+  let accountBusy = $state(false);
+  let signInError = $state('');
+  let googleSignIn: Awaited<ReturnType<typeof prepareGoogleSignIn>> | undefined;
   let projectsOpen = $state(false);
   let projectName = $state('');
   let projects = $state(['Personal website', 'Ideas & inspiration']);
@@ -57,6 +66,11 @@
   );
 
   onMount(() => {
+    try {
+      accountName = sessionStorage.getItem(accountStorageKey) || null;
+    } catch {
+      /* Sign-in works in memory when browser storage is unavailable. */
+    }
     try {
       const saved = JSON.parse(
         localStorage.getItem('kett-workspace-v1') ?? 'null',
@@ -118,6 +132,53 @@
       /* The workspace also works without persistent browser storage. */
     }
   });
+
+  function setAccount(name: string | null) {
+    accountName = name;
+    try {
+      if (name) sessionStorage.setItem(accountStorageKey, name);
+      else sessionStorage.removeItem(accountStorageKey);
+    } catch {
+      /* Only the display name is persisted, never an OAuth token. */
+    }
+  }
+
+  async function prepareAccount() {
+    if (!googleClientId || googleSignIn || accountBusy) return;
+    signInError = '';
+    accountBusy = true;
+    try {
+      googleSignIn = await prepareGoogleSignIn(googleClientId);
+    } catch {
+      signInError = 'Could not load Google sign-in. Select Sign in to retry.';
+    } finally {
+      accountBusy = false;
+    }
+  }
+
+  async function toggleAccount() {
+    if (accountBusy) return;
+    signInError = '';
+    if (accountName) {
+      setAccount(null);
+      void prepareAccount();
+    } else if (!googleClientId) {
+      setAccount('Demo User');
+    } else if (!googleSignIn) {
+      // Prepare for a fresh click so browsers allow the Google popup.
+      await prepareAccount();
+    } else {
+      accountBusy = true;
+      try {
+        const name = await googleSignIn();
+        if (name) setAccount(name);
+      } catch {
+        signInError = 'Google sign-in failed. Please try again.';
+      } finally {
+        accountBusy = false;
+      }
+    }
+  }
 
   function notify(text: string) {
     notification = text;
@@ -448,6 +509,7 @@
         onclick={() => {
           clearConfirm = false;
           settingsOpen = true;
+          if (!accountName) void prepareAccount();
         }}
       >
         <Icon name="settings" size={18} /> Settings
@@ -746,7 +808,33 @@
             </button>
           </div>
           <div class="setting-row">
-            <span><Icon name="user" size={18} /> Not signed in</span>
+            <span class="account-label">
+              <Icon name="user" size={18} />
+              <span>
+                <span aria-live="polite">{accountName ?? 'Guest'}</span>
+                <small>
+                  {accountBusy
+                    ? 'Connecting to Google…'
+                    : !googleClientId
+                      ? 'Google sign-in demo'
+                      : accountName
+                        ? 'Signed in with Google'
+                        : 'Sign in with Google'}
+                </small>
+                {#if signInError}
+                  <small class="sign-in-error" role="alert">
+                    {signInError}
+                  </small>
+                {/if}
+              </span>
+            </span>
+            <button
+              class="primary-button account-button"
+              disabled={accountBusy}
+              onclick={toggleAccount}
+            >
+              {accountName ? 'Sign out' : 'Sign in'}
+            </button>
           </div>
           <div class="setting-row">
             <span>

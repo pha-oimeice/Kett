@@ -41,8 +41,20 @@ npx playwright install chromium
 - 主界面右上角切换浅色 / 深色主题、对话 Markdown 导出
 - 使用 localStorage 保存对话、项目和主题
 - 手机适配、侧栏抽屉、键盘焦点管理与减少动态效果支持
-- 英文界面、无障碍标签和示例对话；默认未登录
+- 英文界面、无障碍标签和示例对话；默认显示 Guest，支持 Google 登录和退出
 - 自动将旧版内置示例切换为英文，保留用户自己的对话和项目
+
+## Google 登录
+
+默认无需配置。在 **Settings** 中点击 **Sign in**，可用演示账号走通登录和退出，不会联系 Google。
+
+要启用真实 Google 登录，在 Google Cloud 创建 **Web application** 类型的 OAuth 客户端，并在 **Authorized JavaScript origins** 中添加访问前端的完整来源（例如 `http://localhost:5173`；如果用 `127.0.0.1` 访问，需要单独添加）。将客户端 ID 写入 `frontend/.env.local`，然后重启 Vite 或重新构建：
+
+```dotenv
+VITE_GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com
+```
+
+弹窗流程不需要配置重定向 URI，也不需要客户端密钥。OAuth 令牌只用于读取 Google 个人资料，不会写入浏览器存储；只有显示名称保留在当前浏览器会话中。**Sign out** 只清除 Kett 的登录状态，不会退出 Google 账号。前端登录状态不用于后端认证或授权。
 
 ## 文件结构
 
@@ -53,6 +65,7 @@ src/
 ├── main.ts          # 应用入口
 └── lib/
     ├── Icon.svelte  # SVG 图标
+    ├── google-auth.ts # Google OAuth 弹窗和个人资料读取
     └── demo.ts      # 数据类型、示例对话、本地回复和示例 HTML
 tests/
 └── workspace.spec.ts # 浏览器交互测试
@@ -60,7 +73,7 @@ tests/
 
 ## 演示边界
 
-**没有后端、登录功能或 AI 服务。** 回复来自 `src/lib/demo.ts` 中的本地预设；思考模式不会调用模型。可下载的 HTML 是内置示例，而非动态生成的作品。附件不会上传，也不会解析。
+**没有后端认证或 AI 服务。** 回复来自 `src/lib/demo.ts` 中的本地预设；思考模式不会调用模型。可下载的 HTML 是内置示例，而非动态生成的作品。附件不会上传，也不会解析。
 
 对话内容仅保存在当前浏览器中，清理站点数据会将其删除。页面使用 Google Fonts 加载字体；字体不可用时会回退到系统字体，不影响功能。
 
