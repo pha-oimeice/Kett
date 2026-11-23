@@ -10,7 +10,7 @@ type GoogleIdentity = {
   ): void;
 };
 
-type UserProfile = { id: number; name: string; email: string | null };
+export type UserProfile = { id: number; name: string; email: string | null };
 
 function getGoogleIdentity() {
   return (
@@ -18,7 +18,9 @@ function getGoogleIdentity() {
   ).google?.accounts?.id;
 }
 
+const AUTH_TIMEOUT = 15_000;
 let sdk: Promise<GoogleIdentity> | undefined;
+let pendingChallenge: Promise<string> | undefined;
 
 function loadGoogleIdentity() {
   const existing = getGoogleIdentity();
@@ -28,11 +30,15 @@ function loadGoogleIdentity() {
     script.src = 'https://accounts.google.com/gsi/client';
     script.async = true;
     const fail = () => {
+      clearTimeout(deadline);
+      script.onload = script.onerror = null;
       script.remove();
       sdk = undefined;
       reject(new Error('Google Identity Services could not be loaded'));
     };
+    const deadline = window.setTimeout(fail, AUTH_TIMEOUT);
     script.onload = () => {
+      clearTimeout(deadline);
       const identity = getGoogleIdentity();
       if (identity) resolve(identity);
       else fail();
@@ -49,7 +55,17 @@ function authRequest(endpoint: string, options?: RequestInit) {
     credentials: 'same-origin',
     cache: 'no-store',
     redirect: 'error',
+    signal: AbortSignal.timeout(AUTH_TIMEOUT),
   });
+}
+
+async function requestChallenge() {
+  const response = await authRequest('google/challenge', { method: 'POST' });
+  if (!response.ok) throw new Error('Could not start Google sign-in');
+  const { nonce } = await response.json();
+  if (typeof nonce !== 'string' || !nonce)
+    throw new Error('No Google sign-in challenge');
+  return nonce;
 }
 
 export async function renderGoogleSignIn(
@@ -59,10 +75,12 @@ export async function renderGoogleSignIn(
 ) {
   const identity = await loadGoogleIdentity();
   if (!target.isConnected) return;
-  const challenge = await authRequest('google/challenge', { method: 'POST' });
-  if (!challenge.ok) throw new Error('Could not start Google sign-in');
-  const { nonce }: { nonce: string } = await challenge.json();
-  if (!nonce) throw new Error('No Google sign-in challenge');
+  // A quick close/reopen can mount a new button while the old request is
+  // pending. Share that request so its Set-Cookie cannot replace a newer nonce.
+  pendingChallenge ??= requestChallenge().finally(() => {
+    pendingChallenge = undefined;
+  });
+  const nonce = await pendingChallenge;
   if (!target.isConnected) return;
   identity.initialize({
     client_id: clientId,
@@ -74,6 +92,21 @@ export async function renderGoogleSignIn(
   identity.renderButton(target, { theme: 'outline', size: 'medium' });
 }
 
+async function readProfile(response: Response): Promise<UserProfile> {
+  const profile = await response.json();
+  if (
+    !profile ||
+    !Number.isSafeInteger(profile.id) ||
+    typeof profile.name !== 'string' ||
+    !profile.name ||
+    (profile.email !== null && typeof profile.email !== 'string')
+  )
+    throw new Error('Invalid account profile');
+  return profile;
+}
+
+export class GoogleSignInUnavailable extends Error {}
+
 export async function signInWithGoogle(
   credential: string,
 ): Promise<UserProfile> {
@@ -82,15 +115,16 @@ export async function signInWithGoogle(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ credential }),
   });
+  if (response.status === 503) throw new GoogleSignInUnavailable();
   if (!response.ok) throw new Error('Google credential was not accepted');
-  return response.json();
+  return readProfile(response);
 }
 
 export async function getCurrentUser(): Promise<UserProfile | null> {
   const response = await authRequest('me');
   if (response.status === 401) return null;
   if (!response.ok) throw new Error('Could not check the current session');
-  return response.json();
+  return readProfile(response);
 }
 
 export async function signOut() {

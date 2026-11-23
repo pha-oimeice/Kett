@@ -27,7 +27,7 @@ test('demo sign-in and sign-out survive a reload without Google requests', async
     'Requires running without VITE_GOOGLE_CLIENT_ID',
   );
   await expect(settings.getByText('Guest', { exact: true })).toBeVisible();
-  await settings.getByRole('button', { name: 'Sign in', exact: true }).click();
+  await settings.getByRole('button', { name: 'Try demo sign-in' }).click();
   await expect(settings.getByText('Demo User')).toBeVisible();
 
   await page.reload();
@@ -98,10 +98,18 @@ test('configured Google sign-in trusts the API and restores its session after re
 
   await page.goto('/');
   const settings = await openSettings(page);
-  test.skip(
-    await settings.getByText('Google sign-in demo').isVisible(),
-    'Requires VITE_GOOGLE_CLIENT_ID; Google and API requests are mocked',
-  );
+  const demoLabel = settings.getByText('Google sign-in demo');
+  if (
+    process.env.GOOGLE_CLIENT_ID?.trim() ||
+    process.env.VITE_GOOGLE_CLIENT_ID?.trim()
+  ) {
+    await expect(demoLabel).not.toBeVisible();
+  } else {
+    test.skip(
+      await demoLabel.isVisible(),
+      'Requires a Google client ID; Google and API requests are mocked',
+    );
+  }
   const signIn = settings.getByRole('button', { name: 'Sign in with Google' });
   await signIn.click(); // The mock simulates closing the Google popup.
   await expect(settings.getByText('Guest', { exact: true })).toBeVisible();

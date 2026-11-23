@@ -46,14 +46,16 @@ npx playwright install chromium
 
 ## Google 登录
 
-默认在 **Settings** 中提供演示登录。演示不会联系 Google 或后端，也不会创建有效账号会话。真实登录的配置见 [项目 README](../README.md)。
+默认在 **Settings** 中显示 **Try demo sign-in**。演示不会弹出 Google 或联系后端，也不会创建有效账号会话。通过 `python start.py` 启动时，前后端共用 `GOOGLE_CLIENT_ID`；真实登录的配置见 [项目 README](../README.md)。
 
-真实登录通过 Google Identity Services 获取 ID Token 并交给后端验证，不在浏览器存储中保存令牌或用户资料。打开 **Settings** 时通过 `/api/auth/me` 检查会话；**Sign out** 会撤销当前 Kett 会话，不会退出 Google 账号。
+真实登录通过 Google Identity Services 获取 ID Token 并交给后端验证，不在浏览器存储中保存令牌或用户资料。打开 **Settings** 时通过 `/api/auth/me` 检查会话；只有接口返回 `401` 才显示未登录，检查失败可重试。Google 登录失败后重试会先检查会话，并在需要时重新请求一次性挑战。
+
+**Sign out** 会撤销当前 Kett 会话，不会退出 Google 账号。同源标签页的设置面板会在登录或退出后重新查验会话；已登录的标签页从后台切回时也会复查。标签页之间只通知会话变更，不传输账号资料或令牌。Google 登录挑战仍共享同一浏览器 Cookie，建议一次只在一个标签页发起登录。
 
 默认 `npm test` 在无配置时覆盖演示登录。要执行真实登录界面的测试，可用以下命令（Google SDK 和 API 均由测试模拟，不需要运行后端）：
 
 ```bash
-VITE_GOOGLE_CLIENT_ID=test.apps.googleusercontent.com npm test -- tests/account.spec.ts
+GOOGLE_CLIENT_ID=test.apps.googleusercontent.com npm test -- tests/account.spec.ts
 ```
 
 ## 文件结构

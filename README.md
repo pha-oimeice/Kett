@@ -25,10 +25,10 @@ python start.py
 ## 本地启用 Google 登录（可选）
 
 1. 在 Google Cloud 创建 **Web application** 类型的 OAuth 客户端，将 `http://localhost:5173` 添加到 **Authorized JavaScript origins**。弹窗登录不需要客户端密钥或重定向 URI。如果应用处于测试模式，将登录账号添加到测试用户列表。
-2. 在 `frontend/.env.local` 设置 `VITE_GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com`。同时在启动脚本的终端中设置相同的 `GOOGLE_CLIENT_ID`，例如 `export GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com`（PowerShell：`$env:GOOGLE_CLIENT_ID = 'your-client-id.apps.googleusercontent.com'`）。
+2. 在运行 `python start.py` 的终端设置 `GOOGLE_CLIENT_ID`：PowerShell 用 `$env:GOOGLE_CLIENT_ID = 'your-client-id.apps.googleusercontent.com'`，Bash 用 `export GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com`。前后端共用该值，无须再创建 `frontend/.env.local`。如果前端独立构建或启动，且进程没有收到 `GOOGLE_CLIENT_ID`，可用 `VITE_GOOGLE_CLIENT_ID` 设置与后端相同的公开 Client ID。
 3. 运行 `python start.py`，打开 `http://localhost:5173`，在 **Settings** 中使用 Google 登录。如果用 `127.0.0.1` 访问，Google 授权来源和后端的 `APP_ORIGIN` 都要改为 `http://127.0.0.1:5173`。
 
-未配置 `VITE_GOOGLE_CLIENT_ID` 时保留前端演示登录，不访问后端，也不会生成有效会话。
+如果设置里显示 **Try demo sign-in**，说明前端没有读到 Client ID。演示不会弹出 Google、不访问后端，也不会生成有效会话。设置变量后需重启 `python start.py`；已部署的静态前端需要重新构建。
 
 ## 认证流程
 

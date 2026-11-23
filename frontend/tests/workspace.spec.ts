@@ -168,7 +168,9 @@ test('header theme persists and settings show signed-out status', async ({
   await page.getByRole('button', { name: 'Open workspace settings' }).click();
   const settings = page.getByRole('dialog', { name: 'Workspace settings' });
   await expect(settings.getByText('Guest', { exact: true })).toBeVisible();
-  await expect(settings.getByRole('button', { name: 'Sign in' })).toBeVisible();
+  await expect(
+    settings.getByRole('button', { name: 'Try demo sign-in' }),
+  ).toBeVisible();
   await expect(settings.getByText('Lin', { exact: true })).toHaveCount(0);
   await expect(settings.getByText(/your own little space/i)).toHaveCount(0);
   await expect(settings.getByLabel('Dark appearance')).toHaveCount(0);

@@ -5,9 +5,11 @@
   import Icon from './lib/Icon.svelte';
   import {
     getCurrentUser,
+    GoogleSignInUnavailable,
     renderGoogleSignIn,
     signInWithGoogle,
     signOut,
+    type UserProfile,
   } from './lib/google-auth';
   import {
     suggestions,
@@ -29,10 +31,41 @@
   let settingsOpen = $state(false);
   const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID?.trim();
   const demoAccountKey = 'kett-google-demo-v1';
-  let accountName = $state<string | null>(null);
-  let accountBusy = $state(false);
-  let accountChecked = $state(false);
-  let signInError = $state('');
+  type Account =
+    | { status: 'unchecked' | 'checking' | 'guest' | 'signing-in' }
+    | { status: 'unavailable' | 'sign-in-failed'; error: string }
+    | {
+        status: 'signed-in' | 'signing-out';
+        profile: UserProfile;
+        error?: string;
+      };
+  const accountStatus: Record<Account['status'], string> = {
+    unchecked: 'Checking your session…',
+    checking: 'Checking your session…',
+    unavailable: 'Session status unavailable',
+    guest: 'Sign in with Google',
+    'sign-in-failed': 'Sign in with Google',
+    'signing-in': 'Signing in…',
+    'signed-in': 'Signed in with Google',
+    'signing-out': 'Signing out…',
+  };
+  let demoSignedIn = $state(false);
+  let account = $state<Account>({ status: 'unchecked' });
+  let accountChannel: BroadcastChannel | undefined;
+  let accountRefreshQueued = false;
+  const accountName = $derived(
+    !googleClientId
+      ? demoSignedIn
+        ? 'Demo User'
+        : 'Guest'
+      : 'profile' in account
+        ? account.profile.name
+        : ['unchecked', 'checking', 'unavailable', 'signing-in'].includes(
+              account.status,
+            )
+          ? 'Account'
+          : 'Guest',
+  );
   let projectsOpen = $state(false);
   let projectName = $state('');
   let projects = $state(['Personal website', 'Ideas & inspiration']);
@@ -71,10 +104,15 @@
   onMount(() => {
     if (!googleClientId) {
       try {
-        if (sessionStorage.getItem(demoAccountKey)) accountName = 'Demo User';
+        demoSignedIn = !!sessionStorage.getItem(demoAccountKey);
       } catch {
         /* Demo sign-in works in memory without browser storage. */
       }
+    } else if (typeof BroadcastChannel !== 'undefined') {
+      accountChannel = new BroadcastChannel('kett-auth-v1');
+      accountChannel.onmessage = ({ data }) => {
+        if (data === 'session-changed') void refreshAccount();
+      };
     }
     try {
       const saved = JSON.parse(
@@ -120,6 +158,8 @@
     }
     loaded = true;
     return () => {
+      accountChannel?.close();
+      accountChannel = undefined;
       clearInterval(streamTimer);
       clearTimeout(toastTimer);
       clearTimeout(copyTimer);
@@ -139,28 +179,54 @@
   });
 
   function toggleDemoAccount() {
-    accountName = accountName ? null : 'Demo User';
+    demoSignedIn = !demoSignedIn;
     try {
-      if (accountName) sessionStorage.setItem(demoAccountKey, accountName);
+      if (demoSignedIn) sessionStorage.setItem(demoAccountKey, 'Demo User');
       else sessionStorage.removeItem(demoAccountKey);
     } catch {
       /* Demo sign-in works in memory without browser storage. */
     }
   }
 
+  function refreshQueuedAccount() {
+    if (!accountRefreshQueued) return;
+    accountRefreshQueued = false;
+    void refreshAccount();
+  }
+
+  function recheckVisibleAccount() {
+    // Do not remount the Google button just because its popup lost focus.
+    if (
+      document.visibilityState === 'visible' &&
+      account.status === 'signed-in'
+    ) {
+      void refreshAccount();
+    }
+  }
+
   async function refreshAccount() {
-    if (!googleClientId || accountBusy) return;
-    accountChecked = false;
-    signInError = '';
-    accountBusy = true;
+    if (!googleClientId || !settingsOpen) return;
+    if (
+      account.status === 'checking' ||
+      account.status === 'signing-in' ||
+      account.status === 'signing-out'
+    ) {
+      accountRefreshQueued = true;
+      return;
+    }
+    account = { status: 'checking' };
     try {
-      accountName = (await getCurrentUser())?.name ?? null;
-      accountChecked = true;
+      const profile = await getCurrentUser();
+      account = profile
+        ? { status: 'signed-in', profile }
+        : { status: 'guest' };
     } catch {
-      accountName = null;
-      signInError = 'Could not check your session. Please try again.';
+      account = {
+        status: 'unavailable',
+        error: 'Could not check your session. Please try again.',
+      };
     } finally {
-      accountBusy = false;
+      refreshQueuedAccount();
     }
   }
 
@@ -168,35 +234,52 @@
     if (!googleClientId) return;
     void renderGoogleSignIn(node, googleClientId, finishGoogleSignIn).catch(
       () => {
-        if (node.isConnected)
-          signInError = 'Could not load Google sign-in. Please try again.';
+        if (node.isConnected && account.status === 'guest') {
+          account = {
+            status: 'sign-in-failed',
+            error: 'Could not load Google sign-in. Please try again.',
+          };
+        }
       },
     );
   }
 
   async function finishGoogleSignIn(credential: string) {
-    if (accountBusy) return;
-    accountBusy = true;
+    if (account.status !== 'guest') return;
+    account = { status: 'signing-in' };
     try {
-      accountName = (await signInWithGoogle(credential)).name;
-    } catch {
-      signInError = 'Google sign-in failed. Please try again.';
+      const profile = await signInWithGoogle(credential);
+      account = { status: 'signed-in', profile };
+      accountChannel?.postMessage('session-changed');
+    } catch (error) {
+      account = {
+        status: 'sign-in-failed',
+        error:
+          error instanceof GoogleSignInUnavailable
+            ? 'Google sign-in is temporarily unavailable. Please try again.'
+            : 'Google sign-in failed. Please try again.',
+      };
     } finally {
-      accountBusy = false;
+      refreshQueuedAccount();
     }
   }
 
   async function endSession() {
-    if (accountBusy) return;
-    accountBusy = true;
-    signInError = '';
+    if (account.status !== 'signed-in') return;
+    const { profile } = account;
+    account = { status: 'signing-out', profile };
     try {
       await signOut();
-      accountName = null;
+      account = { status: 'guest' };
+      accountChannel?.postMessage('session-changed');
     } catch {
-      signInError = 'Could not sign out. Please try again.';
+      account = {
+        status: 'signed-in',
+        profile,
+        error: 'Could not sign out. Please try again.',
+      };
     } finally {
-      accountBusy = false;
+      refreshQueuedAccount();
     }
   }
 
@@ -441,6 +524,8 @@
       modelMenu = false;
   }}
 />
+
+<svelte:document onvisibilitychange={recheckVisibleAccount} />
 
 <div class:dark class="app-shell">
   {#if mobileSidebar}<button
@@ -831,19 +916,15 @@
             <span class="account-label">
               <Icon name="user" size={18} />
               <span>
-                <span aria-live="polite">{accountName ?? 'Guest'}</span>
+                <span aria-live="polite">{accountName}</span>
                 <small>
-                  {accountBusy
-                    ? 'Checking account…'
-                    : !googleClientId
-                      ? 'Google sign-in demo'
-                      : accountName
-                        ? 'Signed in with Google'
-                        : 'Sign in with Google'}
+                  {googleClientId
+                    ? accountStatus[account.status]
+                    : 'Google sign-in demo'}
                 </small>
-                {#if signInError}
+                {#if 'error' in account && account.error}
                   <small class="sign-in-error" role="alert">
-                    {signInError}
+                    {account.error}
                   </small>
                 {/if}
               </span>
@@ -853,24 +934,24 @@
                 class="primary-button account-button"
                 onclick={toggleDemoAccount}
               >
-                {accountName ? 'Sign out' : 'Sign in'}
+                {demoSignedIn ? 'Sign out' : 'Try demo sign-in'}
               </button>
-            {:else if accountName}
+            {:else if account.status === 'signed-in' || account.status === 'signing-out'}
               <button
                 class="primary-button account-button"
-                disabled={accountBusy}
+                disabled={account.status === 'signing-out'}
                 onclick={endSession}
               >
                 Sign out
               </button>
-            {:else if signInError}
+            {:else if account.status === 'unavailable' || account.status === 'sign-in-failed'}
               <button
                 class="primary-button account-button"
                 onclick={refreshAccount}
               >
                 Retry
               </button>
-            {:else if accountChecked && !accountBusy}
+            {:else if account.status === 'guest'}
               <div class="account-button" use:mountGoogleButton></div>
             {/if}
           </div>
