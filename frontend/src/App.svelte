@@ -20,6 +20,7 @@
     type Message,
     type Attachment,
   } from './lib/demo';
+  import { listChatModels, streamChat } from './lib/ollama';
 
   let conversations = $state<Conversation[]>(seedConversations());
   let activeId = $state<string | null>(null);
@@ -74,6 +75,8 @@
   let model = $state<string | null>(null);
   let modelMenu = $state(false);
   let thinking = $state(false);
+  let webSearch = $state(false);
+  let searchStatus = $state('');
   let streaming = $state(false);
   let attachments = $state<Attachment[]>([]);
   let notification = $state('');
@@ -84,9 +87,10 @@
   let fileInput: HTMLInputElement;
   let messageArea = $state<HTMLDivElement>();
   let streamTimer: ReturnType<typeof setInterval> | undefined;
+  let streamAbort: AbortController | undefined;
   let toastTimer: ReturnType<typeof setTimeout>;
   let copyTimer: ReturnType<typeof setTimeout>;
-  const models: string[] = [];
+  let models = $state<string[]>([]);
   const active = $derived(conversations.find((c) => c.id === activeId));
   const messages = $derived(active?.messages ?? []);
   const filtered = $derived(
@@ -157,10 +161,16 @@
       /* An unavailable or invalid local store should not block the UI. */
     }
     loaded = true;
+    listChatModels()
+      .then((names) => (models = names))
+      .catch(() => {
+        /* Without a reachable Ollama server the app keeps its preset replies. */
+      });
     return () => {
       accountChannel?.close();
       accountChannel = undefined;
       clearInterval(streamTimer);
+      streamAbort?.abort();
       clearTimeout(toastTimer);
       clearTimeout(copyTimer);
     };
@@ -291,7 +301,10 @@
 
   function stop() {
     clearInterval(streamTimer);
+    streamAbort?.abort();
+    streamAbort = undefined;
     streaming = false;
+    searchStatus = '';
   }
 
   function newChat(project = '') {
@@ -362,12 +375,47 @@
   }
 
   async function respond(conversation: Conversation, text: string) {
-    const reply = demoReply(text);
+    const history = conversation.messages.map(({ role, content }) => ({
+      role,
+      content,
+    }));
     const id = crypto.randomUUID();
     conversation.messages.push({ id, role: 'assistant', content: '' });
     streaming = true;
     await tick();
     scrollBottom();
+    if (model) {
+      const abort = new AbortController();
+      streamAbort = abort;
+      try {
+        for await (const event of streamChat(
+          model,
+          history,
+          webSearch,
+          abort.signal,
+        )) {
+          const message = conversation.messages.find((m) => m.id === id);
+          if (!message) break;
+          if (event.type === 'status') searchStatus = event.text;
+          else if (event.type === 'sources') message.sources = event.sources;
+          else message.content += event.text;
+          await tick();
+          scrollBottom();
+        }
+      } catch (error) {
+        if (!abort.signal.aborted) {
+          const message = conversation.messages.find((m) => m.id === id);
+          const reason = error instanceof Error ? error.message : String(error);
+          if (message && !message.content)
+            message.content = `Could not get a reply from ${model}: ${reason}`;
+          notify('The model request failed');
+        }
+      } finally {
+        if (streamAbort === abort) stop();
+      }
+      return;
+    }
+    const reply = demoReply(text);
     let position = 0;
     streamTimer = setInterval(async () => {
       const message = conversation.messages.find((m) => m.id === id);
@@ -740,7 +788,26 @@
                       </div>
                       {#if !message.content && streaming}<span class="typing">
                           <i></i><i></i><i></i>
-                        </span>{/if}{/if}
+                        </span>{#if searchStatus}<span
+                            class="search-status"
+                            role="status"
+                          >
+                            {searchStatus}
+                          </span>{/if}{/if}{/if}
+                    {#if message.sources?.length && message.content}<ol
+                        class="message-sources"
+                        aria-label="Sources"
+                      >
+                        {#each message.sources as source}<li>
+                            <a
+                              href={source.url}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                            >
+                              {source.title || source.url}
+                            </a>
+                          </li>{/each}
+                      </ol>{/if}
                     {#if message.artifact}<button
                         class="artifact-download"
                         onclick={() =>
@@ -1041,6 +1108,27 @@
           <Icon name="brain" size={16} /><span>
             Thinking mode
           </span>{#if thinking}<span class="thinking-dot"></span>{/if}
+        </button>
+        <button
+          class:enabled={webSearch}
+          class="thinking-button"
+          aria-pressed={webSearch}
+          aria-label="Web search"
+          title="Search the web before answering"
+          onclick={() => {
+            webSearch = !webSearch;
+            notify(
+              !webSearch
+                ? 'Web search disabled'
+                : model
+                  ? 'Web search enabled'
+                  : 'Web search enabled · Select a model to use it',
+            );
+          }}
+        >
+          <Icon name="search" size={16} /><span>
+            Web search
+          </span>{#if webSearch}<span class="thinking-dot"></span>{/if}
         </button>
       </div>
       <div class="composer-submit">

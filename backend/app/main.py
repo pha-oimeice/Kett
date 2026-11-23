@@ -6,12 +6,14 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from google.auth import exceptions as google_errors
 from sqlalchemy import delete, event
 from sqlalchemy.dialects.sqlite import insert
 from sqlmodel import Session, SQLModel, create_engine
 
+from .chat import create_router
 from .google import verify_credential
 from .models import BrowserSession, GoogleChallenge, GoogleCredential, User, UserProfile
 
@@ -34,6 +36,7 @@ def create_app(
     database_url: str | None = None,
     google_client_id: str | None = None,
     app_origin: str | None = None,
+    http_transport: httpx.AsyncBaseTransport | None = None,
 ) -> FastAPI:
     client_id = (
         google_client_id
@@ -229,6 +232,7 @@ def create_app(
         response.delete_cookie(SESSION_COOKIE, **cookie_options)
         response.delete_cookie(CHALLENGE_COOKIE, **cookie_options)
 
+    app.include_router(create_router(require_same_origin, http_transport))
     return app
 
 

@@ -1,6 +1,8 @@
 import { test, expect } from '@playwright/test';
 
 test.beforeEach(async ({ page }) => {
+  // Keep tests on preset replies even when the backend and Ollama are running.
+  await page.route('**/api/models', (route) => route.abort());
   await page.goto('/');
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
 });

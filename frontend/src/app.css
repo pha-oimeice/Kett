@@ -901,6 +901,26 @@ button:disabled {
 .typing i:nth-child(3) {
   animation-delay: 0.3s;
 }
+.search-status {
+  display: block;
+  font-size: 13px;
+  color: var(--muted);
+}
+.message-sources {
+  margin: 12px 0 0;
+  padding: 10px 0 0 22px;
+  border-top: 1px solid var(--line);
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+.message-sources a {
+  color: var(--subtle);
+  overflow-wrap: anywhere;
+}
+.message-sources a:hover {
+  color: var(--accent);
+}
 @keyframes pulse {
   0%,
   80%,

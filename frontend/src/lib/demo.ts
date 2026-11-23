@@ -9,6 +9,7 @@ export interface Message {
   attachments?: Attachment[];
   artifact?: boolean;
   liked?: boolean;
+  sources?: { title: string; url: string }[];
 }
 export interface Conversation {
   id: string;
