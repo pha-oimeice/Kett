@@ -18,9 +18,14 @@
     artifactSource,
     type Conversation,
     type Message,
-    type Attachment,
   } from './lib/demo';
   import { listChatModels, streamChat } from './lib/ollama';
+  import {
+    generateDatasetReport,
+    inspectDataset,
+    type DatasetColumns,
+    type DatasetOptions,
+  } from './lib/dataset-analysis';
 
   let conversations = $state<Conversation[]>(seedConversations());
   let activeId = $state<string | null>(null);
@@ -74,11 +79,28 @@
   let dark = $state(false);
   let model = $state<string | null>(null);
   let modelMenu = $state(false);
+  let modelButton: HTMLButtonElement;
+  let addModelOpen = $state(false);
+  let modelDiscovery = $state<
+    { status: 'loading' | 'error' } | { status: 'ready'; names: string[] }
+  >({ status: 'loading' });
+  let discoverAbort: AbortController | undefined;
   let thinking = $state(false);
   let webSearch = $state(false);
   let searchStatus = $state('');
   let streaming = $state(false);
-  let attachments = $state<Attachment[]>([]);
+  let datasetFile = $state<File | null>(null);
+  let datasetColumns = $state<DatasetColumns | null>(null);
+  let datasetTarget = $state('');
+  let datasetFeatures = $state<string[]>([]);
+  let datasetError = $state('');
+  let inspectingDataset = $state(false);
+  let datasetInspectAbort: AbortController | undefined;
+  const canSend = $derived(
+    datasetFile
+      ? !!datasetColumns && !!datasetTarget && datasetFeatures.length > 0
+      : !!input.trim(),
+  );
   let notification = $state('');
   let copiedId = $state('');
   let clearConfirm = $state(false);
@@ -171,6 +193,8 @@
       accountChannel = undefined;
       clearInterval(streamTimer);
       streamAbort?.abort();
+      datasetInspectAbort?.abort();
+      discoverAbort?.abort();
       clearTimeout(toastTimer);
       clearTimeout(copyTimer);
     };
@@ -307,11 +331,56 @@
     searchStatus = '';
   }
 
+  async function discoverModels() {
+    discoverAbort?.abort();
+    const abort = new AbortController();
+    discoverAbort = abort;
+    modelDiscovery = { status: 'loading' };
+    try {
+      const names = await listChatModels(abort.signal);
+      if (!abort.signal.aborted) {
+        modelDiscovery = { status: 'ready', names: [...new Set(names)] };
+      }
+    } catch {
+      if (!abort.signal.aborted) modelDiscovery = { status: 'error' };
+    }
+  }
+
+  function openAddModel() {
+    modelMenu = false;
+    addModelOpen = true;
+    void discoverModels();
+  }
+
+  function closeAddModel() {
+    discoverAbort?.abort();
+    discoverAbort = undefined;
+    addModelOpen = false;
+    void tick().then(() => modelButton?.focus());
+  }
+
+  function addModel(name: string) {
+    if (!models.includes(name)) models = [...models, name];
+    model = name;
+    closeAddModel();
+  }
+
+  function clearDataset() {
+    datasetInspectAbort?.abort();
+    datasetInspectAbort = undefined;
+    datasetFile = null;
+    datasetColumns = null;
+    datasetTarget = '';
+    datasetFeatures = [];
+    datasetError = '';
+    inspectingDataset = false;
+  }
+
   function newChat(project = '') {
     stop();
     activeId = null;
     input = '';
-    attachments = [];
+    clearDataset();
     selectedProject = project;
     modelMenu = false;
     mobileSidebar = false;
@@ -322,7 +391,7 @@
     stop();
     activeId = id;
     input = '';
-    attachments = [];
+    clearDataset();
     selectedProject = conversations.find((c) => c.id === id)?.project ?? '';
     searchOpen = false;
     mobileSidebar = false;
@@ -341,13 +410,30 @@
   }
 
   async function send() {
-    if (streaming || (!input.trim() && !attachments.length)) return;
-    const text = input.trim() || 'Could you take a look at these attachments?';
+    if (streaming || !canSend) return;
+    const file = datasetFile;
+    const columns = datasetColumns;
+    const text = file ? `Analyze ${file.name}` : input.trim();
+    const options: DatasetOptions = {
+      target: datasetTarget,
+      features: [...datasetFeatures],
+      prediction_context: input.trim().slice(0, 500),
+      model: model ?? undefined,
+    };
     const userMessage: Message = {
       id: crypto.randomUUID(),
       role: 'user',
-      content: text,
-      attachments: [...attachments],
+      content: file
+        ? `${text}\nTarget: ${options.target}\nFeatures: ${options.features.join(', ')}${options.prediction_context ? `\nPrediction context: ${options.prediction_context}` : ''}`
+        : text,
+      attachments: file
+        ? [
+            {
+              name: file.name,
+              size: `${Math.max(1, Math.ceil(file.size / 1024))} KB`,
+            },
+          ]
+        : undefined,
     };
     if (!activeId) {
       const id = crypto.randomUUID();
@@ -370,8 +456,55 @@
       (a, b) => b.updatedAt - a.updatedAt,
     );
     input = '';
-    attachments = [];
-    await respond(conversation, text);
+    clearDataset();
+    if (file && columns) await analyze(conversation, file, columns, options);
+    else await respond(conversation, text);
+  }
+
+  async function analyze(
+    conversation: Conversation,
+    file: File,
+    columns: DatasetColumns,
+    options: DatasetOptions,
+  ) {
+    const id = crypto.randomUUID();
+    const abort = new AbortController();
+    streamAbort = abort;
+    conversation.messages.push({
+      id,
+      role: 'assistant',
+      content: '',
+      datasetRun: 'error',
+    });
+    streaming = true;
+    searchStatus =
+      'Training and evaluating the model, then generating the report…';
+    try {
+      await tick();
+      scrollBottom();
+      const result = await generateDatasetReport(file, options, abort.signal);
+      const message = conversation.messages.find((m) => m.id === id);
+      if (message && !abort.signal.aborted) {
+        message.content = result.report;
+        message.datasetRun = 'report';
+      }
+    } catch (error) {
+      if (!abort.signal.aborted) {
+        const reason = error instanceof Error ? error.message : String(error);
+        const message = conversation.messages.find((m) => m.id === id);
+        if (message)
+          message.content = `Could not generate the report: ${reason}`;
+        datasetFile = file;
+        datasetColumns = columns;
+        datasetTarget = options.target;
+        datasetFeatures = options.features;
+        input = options.prediction_context ?? '';
+      }
+    } finally {
+      if (streamAbort === abort) stop();
+      await tick();
+      scrollBottom();
+    }
   }
 
   async function respond(conversation: Conversation, text: string) {
@@ -442,10 +575,15 @@
   function keyboard(event: KeyboardEvent) {
     if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
       event.preventDefault();
+      if (addModelOpen) return;
       searchOpen = !searchOpen;
       search = '';
     }
     if (event.key === 'Escape') {
+      if (addModelOpen) {
+        closeAddModel();
+        return;
+      }
       searchOpen = false;
       settingsOpen = false;
       projectsOpen = false;
@@ -461,24 +599,37 @@
     }
   }
 
-  function attach(event: Event) {
-    const files = (event.target as HTMLInputElement).files;
-    if (files) {
-      const additions = Array.from(files)
-        .slice(0, 5 - attachments.length)
-        .map((file) => ({
-          name: file.name,
-          size:
-            file.size > 1048576
-              ? `${(file.size / 1048576).toFixed(1)} MB`
-              : `${Math.max(1, Math.round(file.size / 1024))} KB`,
-        }));
-      attachments = [...attachments, ...additions];
-      notify(
-        'Attachment added · Files are not uploaded or analyzed in this demo',
-      );
+  async function attach(event: Event) {
+    const picker = event.currentTarget as HTMLInputElement;
+    const file = picker.files?.[0];
+    picker.value = '';
+    if (!file || streaming) return;
+    clearDataset();
+    if (!/\.(csv|tsv)$/i.test(file.name)) {
+      datasetError = 'Only structured CSV or TSV files are supported.';
+      return;
     }
-    fileInput.value = '';
+    if (file.size > 5 * 1024 * 1024) {
+      datasetError = 'Dataset uploads are limited to 5 MiB.';
+      return;
+    }
+    const abort = new AbortController();
+    datasetInspectAbort = abort;
+    datasetFile = file;
+    inspectingDataset = true;
+    try {
+      const columns = await inspectDataset(file, abort.signal);
+      if (!abort.signal.aborted) datasetColumns = columns;
+    } catch (error) {
+      if (!abort.signal.aborted) {
+        datasetError = error instanceof Error ? error.message : String(error);
+      }
+    } finally {
+      if (datasetInspectAbort === abort) {
+        inspectingDataset = false;
+        datasetInspectAbort = undefined;
+      }
+    }
   }
 
   async function copy(text: string, id: string) {
@@ -522,7 +673,7 @@
     const lastUser = [...active.messages]
       .reverse()
       .find((m) => m.role === 'user');
-    if (!lastUser) return;
+    if (!lastUser || active.messages.at(-1)?.datasetRun) return;
     if (active.messages.at(-1)?.role === 'assistant') active.messages.pop();
     respond(active, lastUser.content);
   }
@@ -808,6 +959,17 @@
                             </a>
                           </li>{/each}
                       </ol>{/if}
+                    {#if message.datasetRun === 'report'}<button
+                        class="artifact-download"
+                        onclick={() =>
+                          download(
+                            message.content,
+                            'report.md',
+                            'text/markdown;charset=utf-8',
+                          )}
+                      >
+                        <Icon name="download" size={16} /> Download report
+                      </button>{/if}
                     {#if message.artifact}<button
                         class="artifact-download"
                         onclick={() =>
@@ -841,7 +1003,7 @@
                           onclick={() => (message.liked = !message.liked)}
                         >
                           <Icon name="thumbs" size={15} />
-                        </button>{#if message.id === messages.at(-1)?.id}<button
+                        </button>{#if message.id === messages.at(-1)?.id && !message.datasetRun}<button
                             class="icon-button"
                             aria-label="Regenerate"
                             title="Regenerate demo response"
@@ -865,11 +1027,74 @@
   <input
     class="hidden-input"
     type="file"
-    multiple
+    accept=".csv,.tsv"
     bind:this={fileInput}
     onchange={attach}
     aria-label="Choose attachments"
   />
+
+  {#if addModelOpen}
+    <div
+      class="modal-backdrop"
+      role="presentation"
+      onclick={(event) => {
+        if (event.target === event.currentTarget) closeAddModel();
+      }}
+    >
+      <div
+        class="modal"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Add model"
+        tabindex="-1"
+        use:focusDialog
+      >
+        <div class="modal-heading">
+          <h2>Add model</h2>
+          <button
+            class="icon-button"
+            aria-label="Close add model"
+            onclick={closeAddModel}
+          >
+            <Icon name="close" />
+          </button>
+        </div>
+        <p class="model-discovery-note">
+          Only models installed on the configured Ollama server can be added.
+        </p>
+        {#if modelDiscovery.status === 'loading'}
+          <p role="status">Looking for models…</p>
+        {:else if modelDiscovery.status === 'error'}
+          <p role="alert">Could not load models from the configured server.</p>
+        {:else if modelDiscovery.status === 'ready'}
+          {@const available = modelDiscovery.names.filter(
+            (name) => !models.includes(name),
+          )}
+          {#if available.length}
+            <div class="model-discovery-list">
+              {#each available as name (name)}
+                <button
+                  aria-label={`Add ${name}`}
+                  onclick={() => addModel(name)}
+                >
+                  <span>{name}</span><Icon name="plus" size={16} />
+                </button>
+              {/each}
+            </div>
+          {:else}
+            <p role="status">No new models found on the configured server.</p>
+          {/if}
+        {/if}
+        <button
+          class="artifact-download"
+          disabled={modelDiscovery.status === 'loading'}
+          onclick={discoverModels}
+        >
+          <Icon name="refresh" size={16} /> Refresh models
+        </button>
+      </div>
+    </div>
+  {/if}
 
   {#if searchOpen || settingsOpen || projectsOpen}
     <div
@@ -1056,35 +1281,86 @@
 
 {#snippet composer()}
   <div class="composer">
-    {#if attachments.length}<div class="attachment-list">
-        {#each attachments as attachment, i}<div class="attachment">
-            <Icon name="file" size={16} /><span>
-              {attachment.name}<small>{attachment.size}</small>
-            </span><button
-              class="icon-button"
-              aria-label={`Remove ${attachment.name}`}
-              onclick={() =>
-                (attachments = attachments.filter((_, index) => i !== index))}
+    {#if datasetFile}
+      <div class="attachment-list">
+        <div class="attachment">
+          <Icon name="file" size={16} /><span>{datasetFile.name}</span>
+          <button
+            class="icon-button"
+            aria-label={`Remove ${datasetFile.name}`}
+            onclick={clearDataset}
+          >
+            <Icon name="close" size={13} />
+          </button>
+        </div>
+      </div>
+      {#if inspectingDataset}<p class="dataset-status" role="status">
+          Reading table columns…
+        </p>{/if}
+      {#if datasetColumns}
+        <div class="dataset-options">
+          <label class="dataset-target">
+            Target column (numeric)
+            <select
+              value={datasetTarget}
+              onchange={(event) => {
+                datasetTarget = event.currentTarget.value;
+                datasetFeatures = datasetFeatures.filter(
+                  (name) => name !== datasetTarget,
+                );
+              }}
             >
-              <Icon name="close" size={13} />
-            </button>
-          </div>{/each}
-      </div>{/if}
+              <option value="">Choose a column</option>
+              {#each datasetColumns.columns as name}<option value={name}>
+                  {name}
+                </option>{/each}
+            </select>
+          </label>
+          <fieldset>
+            <legend>
+              Feature columns ({datasetFeatures.length}/{datasetColumns.max_features})
+            </legend>
+            <div class="dataset-features">
+              {#each datasetColumns.columns as name}
+                <label>
+                  <input
+                    type="checkbox"
+                    value={name}
+                    bind:group={datasetFeatures}
+                    disabled={name === datasetTarget ||
+                      (!datasetFeatures.includes(name) &&
+                        datasetFeatures.length >= datasetColumns.max_features)}
+                  />
+                  <span>{name}</span>
+                </label>
+              {/each}
+            </div>
+          </fieldset>
+        </div>
+      {/if}
+    {/if}
+    {#if datasetError}<p class="dataset-status" role="alert">
+        {datasetError}
+      </p>{/if}
     <textarea
       bind:this={textarea}
       bind:value={input}
       onkeydown={inputKey}
-      aria-label="Message Kett"
-      placeholder="Message Kett"
+      aria-label={datasetFile
+        ? 'Prediction context (optional)'
+        : 'Message Kett'}
+      placeholder={datasetFile
+        ? 'Prediction context (optional): e.g. after the second exam'
+        : 'Message Kett'}
       rows="2"
-      maxlength={16000}></textarea>
+      maxlength={datasetFile ? 500 : 16000}></textarea>
     <div class="composer-toolbar">
       <div class="composer-tools">
         <button
           class="attach-button icon-button"
-          title="Add attachments (local demo)"
-          aria-label="Add attachments"
-          disabled={attachments.length >= 5}
+          title="Upload a CSV or TSV dataset"
+          aria-label="Upload dataset"
+          disabled={streaming}
           onclick={() => fileInput.click()}
         >
           <Icon name="plus" size={20} />
@@ -1135,6 +1411,7 @@
         <div class="model-select">
           <button
             class="model-button"
+            bind:this={modelButton}
             aria-expanded={modelMenu}
             onclick={() => (modelMenu = !modelMenu)}
           >
@@ -1155,6 +1432,13 @@
               {:else}
                 <div class="dropdown-caption">No models available</div>
               {/each}
+              <button
+                class="model-add"
+                aria-haspopup="dialog"
+                onclick={openAddModel}
+              >
+                Add model <Icon name="plus" size={17} />
+              </button>
             </div>{/if}
         </div>
         {#if streaming}<button
@@ -1166,9 +1450,11 @@
             <span></span>
           </button>{:else}<button
             class="send-button"
-            disabled={!input.trim() && !attachments.length}
-            aria-label="Send message"
-            title="Send message · Enter"
+            disabled={!canSend}
+            aria-label={datasetFile ? 'Generate report' : 'Send message'}
+            title={datasetFile
+              ? 'Generate report · Enter'
+              : 'Send message · Enter'}
             onclick={send}
           >
             <Icon name="arrow" size={19} stroke={2} />
@@ -1177,7 +1463,11 @@
     </div>
   </div>
   <div class="composer-hint">
-    <span>Local demo · No AI connected</span>
+    <span>
+      {datasetFile
+        ? 'Dataset analysis · CSV / TSV'
+        : 'Local demo · No AI connected'}
+    </span>
     <span>
       <kbd>Enter</kbd> to send <span class="hint-dot">·</span>
       <kbd>Shift + Enter</kbd> for a new line

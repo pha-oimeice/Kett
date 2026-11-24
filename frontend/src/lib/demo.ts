@@ -8,6 +8,7 @@ export interface Message {
   content: string;
   attachments?: Attachment[];
   artifact?: boolean;
+  datasetRun?: 'report' | 'error';
   liked?: boolean;
   sources?: { title: string; url: string }[];
 }

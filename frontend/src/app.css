@@ -608,6 +608,35 @@ button:disabled {
   margin-left: auto;
   color: var(--accent);
 }
+.model-menu > .model-add {
+  border-top: 1px solid var(--line);
+}
+.model-discovery-note {
+  color: var(--muted);
+}
+.model-discovery-list {
+  display: grid;
+  gap: 4px;
+  max-height: 250px;
+  overflow-y: auto;
+  margin-bottom: 12px;
+}
+.model-discovery-list > button {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px;
+  border-radius: 6px;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.model-discovery-list > button:hover {
+  background: var(--soft);
+}
+.model-discovery-list > button > svg {
+  flex-shrink: 0;
+}
 .suggestions-header {
   font-size: 12.5px;
   font-weight: 500;
@@ -697,15 +726,56 @@ button:disabled {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.attachment small {
-  display: block;
-  color: var(--muted);
-  font-size: 10px;
-  margin-top: 2px;
-}
 .attachment > .icon-button {
   width: 20px;
   height: 20px;
+}
+.dataset-status,
+.dataset-options {
+  margin: 10px 14px 0;
+  font-size: 13px;
+}
+.dataset-status[role='alert'] {
+  color: var(--text);
+}
+.dataset-options {
+  display: grid;
+  gap: 8px;
+}
+.dataset-target {
+  display: grid;
+  gap: 4px;
+}
+.dataset-target select {
+  max-width: 100%;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 4px;
+}
+.dataset-options fieldset {
+  min-width: 0;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+.dataset-features {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  max-height: 100px;
+  overflow-y: auto;
+}
+.dataset-features label {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.markdown img {
+  max-width: 100%;
+  height: auto;
 }
 /* Conversation and rendered markdown. */
 .messages {

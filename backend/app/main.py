@@ -16,6 +16,7 @@ from sqlmodel import Session, SQLModel, create_engine
 from .chat import create_router
 from .google import verify_credential
 from .models import BrowserSession, GoogleChallenge, GoogleCredential, User, UserProfile
+from .student_analysis.api import create_analysis_router
 
 COOKIE_PATH = "/api/auth"
 SESSION_COOKIE = "kett_session"
@@ -233,6 +234,7 @@ def create_app(
         response.delete_cookie(CHALLENGE_COOKIE, **cookie_options)
 
     app.include_router(create_router(require_same_origin, http_transport))
+    app.include_router(create_analysis_router(require_same_origin))
     return app
 
 

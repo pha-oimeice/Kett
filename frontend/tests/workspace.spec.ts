@@ -36,8 +36,10 @@ test('new conversation, suggestions, empty model menu and keyboard composer', as
   const modelMenu = page.locator('.model-menu');
   await modelButton.click();
   await expect(modelButton).toHaveAttribute('aria-expanded', 'true');
-  await expect(modelMenu).toHaveText('No models available');
-  await expect(modelMenu.getByRole('button')).toHaveCount(0);
+  await expect(modelMenu).toContainText('No models available');
+  await expect(
+    modelMenu.getByRole('button', { name: 'Add model' }),
+  ).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(modelButton).toHaveAttribute('aria-expanded', 'false');
   await modelButton.click();
@@ -48,6 +50,46 @@ test('new conversation, suggestions, empty model menu and keyboard composer', as
     .press('Shift+Enter');
   await expect(page.locator('.messages')).toHaveCount(0);
   await page.screenshot({ path: 'test-results/welcome-desktop.png' });
+});
+
+test('the add button discovers and selects a model from the configured server', async ({
+  page,
+}) => {
+  let requests = 0;
+  await page.route('**/api/models', async (route) => {
+    requests += 1;
+    const response =
+      requests === 1 ? ['existing:latest'] : ['existing:latest', 'new:latest'];
+    await route.fulfill({ json: response });
+  });
+  await page.reload();
+  const selector = page.getByRole('button', { name: 'Select model' });
+  await selector.click();
+  const menu = page.locator('.model-menu');
+  await expect(
+    menu.getByRole('button', { name: 'existing:latest' }),
+  ).toBeVisible();
+  await menu.getByRole('button', { name: 'Add model' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Add model' });
+  await expect(dialog).toContainText('configured Ollama server');
+  await expect(dialog.getByRole('textbox')).toHaveCount(0);
+  await expect(
+    dialog.getByRole('button', { name: 'Add existing:latest' }),
+  ).toHaveCount(0);
+  await dialog.getByRole('button', { name: 'Add new:latest' }).click();
+  const selected = page.getByRole('button', { name: 'new:latest' });
+  await expect(selected).toBeFocused();
+  await selected.click();
+  await expect(
+    menu.getByRole('button', { name: 'new:latest' }),
+  ).toHaveAttribute('aria-pressed', 'true');
+  await menu.getByRole('button', { name: 'Add model' }).click();
+  await expect(dialog.getByRole('status')).toHaveText(
+    'No new models found on the configured server.',
+  );
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(selected).toBeFocused();
 });
 
 test('streams a local response and persists history across reloads', async ({
@@ -188,23 +230,80 @@ test('clearing history requires confirmation', async ({ page }) => {
   await expect(page.locator('.history-item')).toHaveCount(0);
 });
 
-test('attachment metadata can be added and removed without uploading', async ({
-  page,
-}) => {
+test('unstructured files are rejected without an upload', async ({ page }) => {
+  await page.route('**/api/analysis/**', () => {
+    throw new Error('Unsupported files must not be uploaded');
+  });
   await page.getByLabel('Choose attachments').setInputFiles({
     name: 'ideas.txt',
     mimeType: 'text/plain',
     buffer: Buffer.from('A new idea'),
   });
-  await expect(page.locator('.attachment')).toContainText('ideas.txt');
-  await expect(
-    page.getByRole('button', { name: 'Send message', exact: true }),
-  ).toBeEnabled();
-  await page.getByRole('button', { name: 'Remove ideas.txt' }).click();
+  await expect(page.getByRole('alert')).toHaveText(
+    'Only structured CSV or TSV files are supported.',
+  );
   await expect(page.locator('.attachment')).toHaveCount(0);
   await expect(
     page.getByRole('button', { name: 'Send message', exact: true }),
   ).toBeDisabled();
+});
+
+test('uploads a table, configures the columns and downloads the report', async ({
+  page,
+}) => {
+  await page.route('**/api/analysis/columns', async (route) => {
+    const body = route.request().postData()!;
+    expect(body).toContain('filename="grades.csv"');
+    expect(body).toContain('score,hours,practice');
+    await route.fulfill({
+      json: {
+        columns: ['score', 'hours', 'practice'],
+        delimiter: ',',
+        max_features: 32,
+      },
+    });
+  });
+  await page.route('**/api/analysis/report', async (route) => {
+    const body = route.request().postData()!;
+    expect(body).toContain('8,1,2');
+    expect(body).toContain(
+      '"target":"score","features":["hours"],"prediction_context":"Before the exam"',
+    );
+    await route.fulfill({
+      json: {
+        mode: 'template',
+        report:
+          '## Executive Summary\n\nReport for grades.csv\n\n![Chart](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j0xkAAAAASUVORK5CYII=)',
+      },
+    });
+  });
+  await page.getByLabel('Choose attachments').setInputFiles({
+    name: 'grades.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from('score,hours,practice\n8,1,2\n'),
+  });
+  const generate = page.getByRole('button', { name: 'Generate report' });
+  await expect(generate).toBeDisabled();
+  await page.getByRole('checkbox', { name: 'score' }).check();
+  await page.getByLabel('Target column (numeric)').selectOption('score');
+  await expect(page.getByRole('checkbox', { name: 'score' })).toBeDisabled();
+  await expect(page.getByRole('checkbox', { name: 'score' })).not.toBeChecked();
+  await expect(generate).toBeDisabled();
+  await page.getByRole('checkbox', { name: 'hours' }).check();
+  await page
+    .getByLabel('Prediction context (optional)')
+    .fill('Before the exam');
+  await generate.click();
+  await expect(
+    page.getByRole('heading', { name: 'Executive Summary' }),
+  ).toBeVisible();
+  await expect(page.getByRole('img', { name: 'Chart' })).toHaveAttribute(
+    'src',
+    /^data:image\/png;base64,/,
+  );
+  const downloaded = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Download report' }).click();
+  expect((await downloaded).suggestedFilename()).toBe('report.md');
 });
 
 test('mobile layout, drawer navigation and composer stay within the viewport', async ({

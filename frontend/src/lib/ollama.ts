@@ -14,9 +14,10 @@ export type ChatEvent =
   | { type: 'status'; text: string }
   | { type: 'sources'; sources: Source[] };
 
-export async function listChatModels(): Promise<string[]> {
-  const response = await fetch('/api/models');
-  if (!response.ok) return [];
+export async function listChatModels(signal?: AbortSignal): Promise<string[]> {
+  const response = await fetch('/api/models', { signal, cache: 'no-store' });
+  if (!response.ok)
+    throw new Error('Could not load models from the configured server.');
   const data = await response.json();
   return Array.isArray(data)
     ? data.filter((name) => typeof name === 'string')
