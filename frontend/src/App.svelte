@@ -12,7 +12,6 @@
     type UserProfile,
   } from './lib/google-auth';
   import {
-    suggestions,
     seedConversations,
     demoReply,
     artifactSource,
@@ -20,12 +19,6 @@
     type Message,
   } from './lib/demo';
   import { listChatModels, streamChat } from './lib/ollama';
-  import {
-    generateDatasetReport,
-    inspectDataset,
-    type DatasetColumns,
-    type DatasetOptions,
-  } from './lib/dataset-analysis';
 
   let conversations = $state<Conversation[]>(seedConversations());
   let activeId = $state<string | null>(null);
@@ -35,6 +28,8 @@
   let searchOpen = $state(false);
   let search = $state('');
   let settingsOpen = $state(false);
+  let settingsTab = $state<'general' | 'tools'>('general');
+  let matEnabled = $state(true);
   const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID?.trim();
   const demoAccountKey = 'kett-google-demo-v1';
   type Account =
@@ -78,6 +73,7 @@
   let selectedProject = $state('');
   let dark = $state(false);
   let model = $state<string | null>(null);
+  let reportModel = $state('');
   let modelMenu = $state(false);
   let modelButton: HTMLButtonElement;
   let addModelOpen = $state(false);
@@ -89,18 +85,9 @@
   let webSearch = $state(false);
   let searchStatus = $state('');
   let streaming = $state(false);
-  let datasetFile = $state<File | null>(null);
-  let datasetColumns = $state<DatasetColumns | null>(null);
-  let datasetTarget = $state('');
-  let datasetFeatures = $state<string[]>([]);
-  let datasetError = $state('');
-  let inspectingDataset = $state(false);
-  let datasetInspectAbort: AbortController | undefined;
-  const canSend = $derived(
-    datasetFile
-      ? !!datasetColumns && !!datasetTarget && datasetFeatures.length > 0
-      : !!input.trim(),
-  );
+  let attachedFile = $state<File | null>(null);
+  let attachmentError = $state('');
+  const canSend = $derived(attachedFile ? !!model : !!input.trim());
   let notification = $state('');
   let copiedId = $state('');
   let clearConfirm = $state(false);
@@ -174,6 +161,10 @@
             };
           });
         dark = !!saved.dark;
+        if (typeof saved.reportModel === 'string')
+          reportModel = saved.reportModel;
+        if (typeof saved.matEnabled === 'boolean')
+          matEnabled = saved.matEnabled;
         if (Array.isArray(saved.projects))
           projects = saved.projects
             .filter((p: unknown) => typeof p === 'string')
@@ -193,7 +184,6 @@
       accountChannel = undefined;
       clearInterval(streamTimer);
       streamAbort?.abort();
-      datasetInspectAbort?.abort();
       discoverAbort?.abort();
       clearTimeout(toastTimer);
       clearTimeout(copyTimer);
@@ -205,7 +195,13 @@
     try {
       localStorage.setItem(
         'kett-workspace-v1',
-        JSON.stringify({ conversations, dark, projects }),
+        JSON.stringify({
+          conversations,
+          dark,
+          projects,
+          reportModel,
+          matEnabled,
+        }),
       );
     } catch {
       /* The workspace also works without persistent browser storage. */
@@ -365,22 +361,16 @@
     closeAddModel();
   }
 
-  function clearDataset() {
-    datasetInspectAbort?.abort();
-    datasetInspectAbort = undefined;
-    datasetFile = null;
-    datasetColumns = null;
-    datasetTarget = '';
-    datasetFeatures = [];
-    datasetError = '';
-    inspectingDataset = false;
+  function clearAttachment() {
+    attachedFile = null;
+    attachmentError = '';
   }
 
   function newChat(project = '') {
     stop();
     activeId = null;
     input = '';
-    clearDataset();
+    clearAttachment();
     selectedProject = project;
     modelMenu = false;
     mobileSidebar = false;
@@ -391,7 +381,7 @@
     stop();
     activeId = id;
     input = '';
-    clearDataset();
+    clearAttachment();
     selectedProject = conversations.find((c) => c.id === id)?.project ?? '';
     searchOpen = false;
     mobileSidebar = false;
@@ -411,21 +401,12 @@
 
   async function send() {
     if (streaming || !canSend) return;
-    const file = datasetFile;
-    const columns = datasetColumns;
-    const text = file ? `Analyze ${file.name}` : input.trim();
-    const options: DatasetOptions = {
-      target: datasetTarget,
-      features: [...datasetFeatures],
-      prediction_context: input.trim().slice(0, 500),
-      model: model ?? undefined,
-    };
+    const file = attachedFile;
+    const text = input.trim() || 'What can you tell me about this attachment?';
     const userMessage: Message = {
       id: crypto.randomUUID(),
       role: 'user',
-      content: file
-        ? `${text}\nTarget: ${options.target}\nFeatures: ${options.features.join(', ')}${options.prediction_context ? `\nPrediction context: ${options.prediction_context}` : ''}`
-        : text,
+      content: text,
       attachments: file
         ? [
             {
@@ -456,82 +437,64 @@
       (a, b) => b.updatedAt - a.updatedAt,
     );
     input = '';
-    clearDataset();
-    if (file && columns) await analyze(conversation, file, columns, options);
-    else await respond(conversation, text);
+    await respond(conversation, text, file);
   }
 
-  async function analyze(
+  async function respond(
     conversation: Conversation,
-    file: File,
-    columns: DatasetColumns,
-    options: DatasetOptions,
+    text: string,
+    file: File | null = null,
   ) {
-    const id = crypto.randomUUID();
-    const abort = new AbortController();
-    streamAbort = abort;
-    conversation.messages.push({
-      id,
-      role: 'assistant',
-      content: '',
-      datasetRun: 'error',
-    });
-    streaming = true;
-    searchStatus =
-      'Training and evaluating the model, then generating the report…';
-    try {
-      await tick();
-      scrollBottom();
-      const result = await generateDatasetReport(file, options, abort.signal);
-      const message = conversation.messages.find((m) => m.id === id);
-      if (message && !abort.signal.aborted) {
-        message.content = result.report;
-        message.datasetRun = 'report';
-      }
-    } catch (error) {
-      if (!abort.signal.aborted) {
-        const reason = error instanceof Error ? error.message : String(error);
-        const message = conversation.messages.find((m) => m.id === id);
-        if (message)
-          message.content = `Could not generate the report: ${reason}`;
-        datasetFile = file;
-        datasetColumns = columns;
-        datasetTarget = options.target;
-        datasetFeatures = options.features;
-        input = options.prediction_context ?? '';
-      }
-    } finally {
-      if (streamAbort === abort) stop();
-      await tick();
-      scrollBottom();
-    }
-  }
-
-  async function respond(conversation: Conversation, text: string) {
-    const history = conversation.messages.map(({ role, content }) => ({
-      role,
-      content,
-    }));
+    const history = conversation.messages.map(
+      ({ role, content, datasetRun, attachments }) => ({
+        role,
+        content:
+          datasetRun === 'report'
+            ? content.replace(
+                /data:image\/png;base64,[A-Za-z0-9+/=]+/g,
+                'chart-omitted.png',
+              )
+            : content +
+              (attachments?.length
+                ? `\n[Attached file: ${attachments[0].name}]`
+                : ''),
+      }),
+    );
     const id = crypto.randomUUID();
     conversation.messages.push({ id, role: 'assistant', content: '' });
     streaming = true;
-    await tick();
-    scrollBottom();
-    if (model) {
+    const mainModel = model;
+    if (mainModel) {
       const abort = new AbortController();
       streamAbort = abort;
+      const attachment = file
+        ? {
+            file,
+            matEnabled,
+            reportModel:
+              matEnabled && models.includes(reportModel)
+                ? reportModel
+                : undefined,
+          }
+        : undefined;
       try {
+        await tick();
+        scrollBottom();
         for await (const event of streamChat(
-          model,
+          mainModel,
           history,
           webSearch,
           abort.signal,
+          attachment,
         )) {
           const message = conversation.messages.find((m) => m.id === id);
-          if (!message) break;
+          if (!message || abort.signal.aborted) break;
           if (event.type === 'status') searchStatus = event.text;
           else if (event.type === 'sources') message.sources = event.sources;
-          else message.content += event.text;
+          else if (event.type === 'report') {
+            message.content = event.report;
+            message.datasetRun = 'report';
+          } else message.content += event.text;
           await tick();
           scrollBottom();
         }
@@ -540,7 +503,7 @@
           const message = conversation.messages.find((m) => m.id === id);
           const reason = error instanceof Error ? error.message : String(error);
           if (message && !message.content)
-            message.content = `Could not get a reply from ${model}: ${reason}`;
+            message.content = `Could not get a reply from ${mainModel}: ${reason}`;
           notify('The model request failed');
         }
       } finally {
@@ -548,6 +511,9 @@
       }
       return;
     }
+    await tick();
+    if (!streaming) return;
+    scrollBottom();
     const reply = demoReply(text);
     let position = 0;
     streamTimer = setInterval(async () => {
@@ -565,11 +531,6 @@
       await tick();
       scrollBottom();
     }, 18);
-  }
-
-  function useSuggestion(prompt: string) {
-    input = prompt;
-    textarea?.focus();
   }
 
   function keyboard(event: KeyboardEvent) {
@@ -599,37 +560,17 @@
     }
   }
 
-  async function attach(event: Event) {
+  function attach(event: Event) {
     const picker = event.currentTarget as HTMLInputElement;
     const file = picker.files?.[0];
     picker.value = '';
     if (!file || streaming) return;
-    clearDataset();
-    if (!/\.(csv|tsv)$/i.test(file.name)) {
-      datasetError = 'Only structured CSV or TSV files are supported.';
-      return;
-    }
+    attachmentError = '';
     if (file.size > 5 * 1024 * 1024) {
-      datasetError = 'Dataset uploads are limited to 5 MiB.';
+      attachmentError = 'Attachments are limited to 5 MiB.';
       return;
     }
-    const abort = new AbortController();
-    datasetInspectAbort = abort;
-    datasetFile = file;
-    inspectingDataset = true;
-    try {
-      const columns = await inspectDataset(file, abort.signal);
-      if (!abort.signal.aborted) datasetColumns = columns;
-    } catch (error) {
-      if (!abort.signal.aborted) {
-        datasetError = error instanceof Error ? error.message : String(error);
-      }
-    } finally {
-      if (datasetInspectAbort === abort) {
-        inspectingDataset = false;
-        datasetInspectAbort = undefined;
-      }
-    }
+    attachedFile = file;
   }
 
   async function copy(text: string, id: string) {
@@ -673,9 +614,29 @@
     const lastUser = [...active.messages]
       .reverse()
       .find((m) => m.role === 'user');
-    if (!lastUser || active.messages.at(-1)?.datasetRun) return;
+    if (
+      !lastUser ||
+      lastUser.attachments?.length ||
+      active.messages.at(-1)?.datasetRun
+    )
+      return;
     if (active.messages.at(-1)?.role === 'assistant') active.messages.pop();
     respond(active, lastUser.content);
+  }
+
+  function handleSettingsTabKey(event: KeyboardEvent) {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault();
+    settingsTab =
+      event.key === 'Home'
+        ? 'general'
+        : event.key === 'End'
+          ? 'tools'
+          : settingsTab === 'general'
+            ? 'tools'
+            : 'general';
+    const tabs = (event.currentTarget as HTMLElement).parentElement;
+    tabs?.querySelector<HTMLElement>(`#settings-tab-${settingsTab}`)?.focus();
   }
 
   function focusDialog(node: HTMLDivElement) {
@@ -683,9 +644,9 @@
     const focusable = () =>
       Array.from(
         node.querySelectorAll<HTMLElement>(
-          'button:not(:disabled), input, iframe, [tabindex="0"]',
+          'button:not(:disabled):not([tabindex="-1"]), input:not(:disabled), select:not(:disabled), iframe, [tabindex="0"]',
         ),
-      );
+      ).filter((element) => !element.closest('[hidden]'));
     (focusable()[0] ?? node).focus();
     function trap(event: KeyboardEvent) {
       if (event.key !== 'Tab') return;
@@ -812,6 +773,7 @@
         aria-label="Open workspace settings"
         onclick={() => {
           clearConfirm = false;
+          settingsTab = 'general';
           settingsOpen = true;
           void refreshAccount();
         }}
@@ -883,18 +845,6 @@
             <div class="welcome">
               <h1>New conversation</h1>
               {@render composer()}
-              <h2 class="suggestions-header">Suggested prompts</h2>
-              <div class="suggestions">
-                {#each suggestions as suggestion}<button
-                    class="suggestion-card {suggestion.color}"
-                    onclick={() => useSuggestion(suggestion.prompt)}
-                  >
-                    <span class="suggestion-icon">
-                      <Icon name={suggestion.icon} size={19} />
-                    </span>
-                    <strong>{suggestion.title}</strong>
-                  </button>{/each}
-              </div>
             </div>
           </div>
         {:else}
@@ -1003,7 +953,7 @@
                           onclick={() => (message.liked = !message.liked)}
                         >
                           <Icon name="thumbs" size={15} />
-                        </button>{#if message.id === messages.at(-1)?.id && !message.datasetRun}<button
+                        </button>{#if message.id === messages.at(-1)?.id && !message.datasetRun && !messages.at(-2)?.attachments?.length}<button
                             class="icon-button"
                             aria-label="Regenerate"
                             title="Regenerate demo response"
@@ -1027,7 +977,6 @@
   <input
     class="hidden-input"
     type="file"
-    accept=".csv,.tsv"
     bind:this={fileInput}
     onchange={attach}
     aria-label="Choose attachments"
@@ -1204,69 +1153,141 @@
               <Icon name="close" />
             </button>
           </div>
-          <div class="setting-row">
-            <span class="account-label">
-              <Icon name="user" size={18} />
-              <span>
-                <span aria-live="polite">{accountName}</span>
-                <small>
-                  {googleClientId
-                    ? accountStatus[account.status]
-                    : 'Google sign-in demo'}
-                </small>
-                {#if 'error' in account && account.error}
-                  <small class="sign-in-error" role="alert">
-                    {account.error}
-                  </small>
-                {/if}
-              </span>
-            </span>
-            {#if !googleClientId}
+          <div
+            class="settings-tabs"
+            role="tablist"
+            aria-label="Settings sections"
+          >
+            {#each [{ id: 'general', label: 'General' }, { id: 'tools', label: 'Tools' }] as const as tab (tab.id)}
               <button
-                class="primary-button account-button"
-                onclick={toggleDemoAccount}
+                id={`settings-tab-${tab.id}`}
+                role="tab"
+                aria-selected={settingsTab === tab.id}
+                aria-controls={`settings-panel-${tab.id}`}
+                tabindex={settingsTab === tab.id ? 0 : -1}
+                onclick={() => (settingsTab = tab.id)}
+                onkeydown={handleSettingsTabKey}
               >
-                {demoSignedIn ? 'Sign out' : 'Try demo sign-in'}
+                {tab.label}
               </button>
-            {:else if account.status === 'signed-in' || account.status === 'signing-out'}
-              <button
-                class="primary-button account-button"
-                disabled={account.status === 'signing-out'}
-                onclick={endSession}
-              >
-                Sign out
-              </button>
-            {:else if account.status === 'unavailable' || account.status === 'sign-in-failed'}
-              <button
-                class="primary-button account-button"
-                onclick={refreshAccount}
-              >
-                Retry
-              </button>
-            {:else if account.status === 'guest'}
-              <div class="account-button" use:mountGoogleButton></div>
-            {/if}
+            {/each}
           </div>
-          <div class="setting-row">
-            <span>
-              <Icon name="trash" size={18} /><span>
-                Clear conversations<small>
-                  Delete all chats saved in this browser
-                </small>
+          <div
+            id="settings-panel-general"
+            role="tabpanel"
+            aria-labelledby="settings-tab-general"
+            hidden={settingsTab !== 'general'}
+          >
+            <div class="setting-row">
+              <span class="account-label">
+                <Icon name="user" size={18} />
+                <span>
+                  <span aria-live="polite">{accountName}</span>
+                  <small>
+                    {googleClientId
+                      ? accountStatus[account.status]
+                      : 'Google sign-in demo'}
+                  </small>
+                  {#if 'error' in account && account.error}
+                    <small class="sign-in-error" role="alert">
+                      {account.error}
+                    </small>
+                  {/if}
+                </span>
               </span>
-            </span><button
-              class="danger-button"
-              onclick={() => {
-                if (clearConfirm) {
-                  newChat();
-                  conversations = [];
-                  clearConfirm = false;
-                  notify('All conversations cleared');
-                } else clearConfirm = true;
-              }}
-            >
-              {clearConfirm ? 'Confirm clear?' : 'Clear'}
-            </button>
+              {#if !googleClientId}
+                <button
+                  class="primary-button account-button"
+                  onclick={toggleDemoAccount}
+                >
+                  {demoSignedIn ? 'Sign out' : 'Try demo sign-in'}
+                </button>
+              {:else if account.status === 'signed-in' || account.status === 'signing-out'}
+                <button
+                  class="primary-button account-button"
+                  disabled={account.status === 'signing-out'}
+                  onclick={endSession}
+                >
+                  Sign out
+                </button>
+              {:else if account.status === 'unavailable' || account.status === 'sign-in-failed'}
+                <button
+                  class="primary-button account-button"
+                  onclick={refreshAccount}
+                >
+                  Retry
+                </button>
+              {:else if account.status === 'guest'}
+                <div class="account-button" use:mountGoogleButton></div>
+              {/if}
+            </div>
+            <div class="setting-row">
+              <span>
+                <Icon name="trash" size={18} /><span>
+                  Clear conversations<small>
+                    Delete all chats saved in this browser
+                  </small>
+                </span>
+              </span><button
+                class="danger-button"
+                onclick={() => {
+                  if (clearConfirm) {
+                    newChat();
+                    conversations = [];
+                    clearConfirm = false;
+                    notify('All conversations cleared');
+                  } else clearConfirm = true;
+                }}
+              >
+                {clearConfirm ? 'Confirm clear?' : 'Clear'}
+              </button>
+            </div>
+          </div>
+          <div
+            id="settings-panel-tools"
+            role="tabpanel"
+            aria-labelledby="settings-tab-tools"
+            hidden={settingsTab !== 'tools'}
+          >
+            <div class="setting-row">
+              <label class="tool-toggle">
+                <span>
+                  <strong>Multi-Agent Data Analysis</strong>
+                  <small id="mat-description">
+                    Checks table structure and quality, trains a regression
+                    model, and writes a report.
+                  </small>
+                </span>
+                <input
+                  type="checkbox"
+                  role="switch"
+                  aria-label="Multi-Agent Data Analysis"
+                  aria-describedby="mat-description"
+                  bind:checked={matEnabled}
+                />
+              </label>
+            </div>
+            <div class="setting-row">
+              <label class="report-model-setting">
+                <span>
+                  Report Agent model<small>
+                    The Data Scientist Agent trains in Python and does not use
+                    an LLM.
+                  </small>
+                </span>
+                <select bind:value={reportModel} disabled={!matEnabled}>
+                  <option value="">Use main model</option>
+                  {#if reportModel && !models.includes(reportModel)}
+                    <option value={reportModel} disabled>
+                      {reportModel} (unavailable; using main model)
+                    </option>
+                  {/if}
+                  {#each models as name (name)}<option value={name}>
+                      {name}
+                    </option>{/each}
+                </select>
+              </label>
+            </div>
           </div>
         {/if}
       </div>
@@ -1281,85 +1302,43 @@
 
 {#snippet composer()}
   <div class="composer">
-    {#if datasetFile}
+    {#if attachedFile}
       <div class="attachment-list">
         <div class="attachment">
-          <Icon name="file" size={16} /><span>{datasetFile.name}</span>
+          <Icon name="file" size={16} /><span>{attachedFile.name}</span>
           <button
             class="icon-button"
-            aria-label={`Remove ${datasetFile.name}`}
-            onclick={clearDataset}
+            aria-label={`Remove ${attachedFile.name}`}
+            disabled={streaming}
+            onclick={clearAttachment}
           >
             <Icon name="close" size={13} />
           </button>
         </div>
       </div>
-      {#if inspectingDataset}<p class="dataset-status" role="status">
-          Reading table columns…
+      {#if !model}<p class="attachment-status" role="status">
+          Select a tool-capable main model to send an attachment.
         </p>{/if}
-      {#if datasetColumns}
-        <div class="dataset-options">
-          <label class="dataset-target">
-            Target column (numeric)
-            <select
-              value={datasetTarget}
-              onchange={(event) => {
-                datasetTarget = event.currentTarget.value;
-                datasetFeatures = datasetFeatures.filter(
-                  (name) => name !== datasetTarget,
-                );
-              }}
-            >
-              <option value="">Choose a column</option>
-              {#each datasetColumns.columns as name}<option value={name}>
-                  {name}
-                </option>{/each}
-            </select>
-          </label>
-          <fieldset>
-            <legend>
-              Feature columns ({datasetFeatures.length}/{datasetColumns.max_features})
-            </legend>
-            <div class="dataset-features">
-              {#each datasetColumns.columns as name}
-                <label>
-                  <input
-                    type="checkbox"
-                    value={name}
-                    bind:group={datasetFeatures}
-                    disabled={name === datasetTarget ||
-                      (!datasetFeatures.includes(name) &&
-                        datasetFeatures.length >= datasetColumns.max_features)}
-                  />
-                  <span>{name}</span>
-                </label>
-              {/each}
-            </div>
-          </fieldset>
-        </div>
-      {/if}
     {/if}
-    {#if datasetError}<p class="dataset-status" role="alert">
-        {datasetError}
+    {#if attachmentError}<p class="attachment-status" role="alert">
+        {attachmentError}
       </p>{/if}
     <textarea
       bind:this={textarea}
       bind:value={input}
       onkeydown={inputKey}
-      aria-label={datasetFile
-        ? 'Prediction context (optional)'
-        : 'Message Kett'}
-      placeholder={datasetFile
-        ? 'Prediction context (optional): e.g. after the second exam'
+      aria-label="Message Kett"
+      placeholder={attachedFile
+        ? 'Ask a question about the attachment…'
         : 'Message Kett'}
       rows="2"
-      maxlength={datasetFile ? 500 : 16000}></textarea>
+      maxlength={16000}></textarea>
     <div class="composer-toolbar">
       <div class="composer-tools">
         <button
           class="attach-button icon-button"
-          title="Upload a CSV or TSV dataset"
-          aria-label="Upload dataset"
+          title="Attach any file up to 5 MiB"
+          aria-label="Attach file"
           disabled={streaming}
           onclick={() => fileInput.click()}
         >
@@ -1386,11 +1365,14 @@
           </span>{#if thinking}<span class="thinking-dot"></span>{/if}
         </button>
         <button
-          class:enabled={webSearch}
+          class:enabled={webSearch && !attachedFile}
           class="thinking-button"
-          aria-pressed={webSearch}
+          aria-pressed={webSearch && !attachedFile}
           aria-label="Web search"
-          title="Search the web before answering"
+          disabled={!!attachedFile}
+          title={attachedFile
+            ? 'Remove the attachment to use web search'
+            : 'Search the web before answering'}
           onclick={() => {
             webSearch = !webSearch;
             notify(
@@ -1451,10 +1433,8 @@
           </button>{:else}<button
             class="send-button"
             disabled={!canSend}
-            aria-label={datasetFile ? 'Generate report' : 'Send message'}
-            title={datasetFile
-              ? 'Generate report · Enter'
-              : 'Send message · Enter'}
+            aria-label="Send message"
+            title="Send message · Enter"
             onclick={send}
           >
             <Icon name="arrow" size={19} stroke={2} />
@@ -1464,9 +1444,11 @@
   </div>
   <div class="composer-hint">
     <span>
-      {datasetFile
-        ? 'Dataset analysis · CSV / TSV'
-        : 'Local demo · No AI connected'}
+      {attachedFile
+        ? 'The file stays attached for follow-up questions until removed.'
+        : model
+          ? 'Main model · Ollama'
+          : 'Local demo · No AI connected'}
     </span>
     <span>
       <kbd>Enter</kbd> to send <span class="hint-dot">·</span>

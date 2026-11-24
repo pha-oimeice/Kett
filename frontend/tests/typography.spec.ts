@@ -13,10 +13,6 @@ test('type sizes are 125% of the original across interface surfaces', async ({
     'font-size',
     '14.375px',
   );
-  await expect(page.locator('.suggestion-card strong').first()).toHaveCSS(
-    'font-size',
-    '13.75px',
-  );
   await page.getByRole('button', { name: 'Open workspace settings' }).click();
   await expect(
     page.getByRole('heading', { name: 'Workspace settings' }),
@@ -39,7 +35,6 @@ test('larger type remains contained across desktop, tablet and mobile sizes', as
     for (const selector of [
       '.welcome-scroll',
       '.composer-toolbar',
-      '.suggestions',
       '.topbar',
     ]) {
       const element = page.locator(selector);

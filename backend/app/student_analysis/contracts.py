@@ -82,3 +82,21 @@ class AnalysisResult(BaseModel):
     permutation_repeats: int
     feature_importance: list[FeatureImportance]
     artifacts: Artifacts = Field(default_factory=Artifacts)
+
+
+class FieldSchema(BaseModel):
+    name: str
+    kind: Literal["numeric", "boolean", "text", "unknown"]
+    role: Literal["target", "feature", "unused"]
+
+
+class QualityEvidence(BaseModel):
+    missing_by_column: dict[str, int]
+    duplicate_rows: int
+    infinite_by_column: dict[str, int]
+
+
+class ReportEvidence(AnalysisResult):
+    # Standalone analysis files written before the extra branches remain valid.
+    schema_evidence: list[FieldSchema] | None = None
+    quality_evidence: QualityEvidence | None = None

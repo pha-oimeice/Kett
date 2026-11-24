@@ -7,7 +7,7 @@ import httpx
 from pydantic import BaseModel, ConfigDict, StringConstraints, ValidationError
 
 from ..chat import OLLAMA_TIMEOUT, ollama_url
-from .contracts import AnalysisResult
+from .contracts import ReportEvidence
 
 REPORT_FILE = "report.md"
 Section = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
@@ -34,6 +34,7 @@ Do not repeat numeric result values; the application renders the test metrics, d
 counts, and main feature ranks separately. Explain the objective in Executive Summary,
 the held-out evaluation in Methodology, and the comparison with the mean baseline and
 strongest features in Findings. Do not claim improvement when metrics do not support it.
+When schema and quality evidence is provided, interpret relevant issues without guessing field meanings.
 In Limitations, address the single split, generalizability, and the prediction timing.
 Feature importance is not causation and can be misleading with correlated features.
 Recommendations should suggest ways to validate the model before real-world use.
@@ -46,8 +47,47 @@ def markdown_text(value: str) -> str:
     )
 
 
+def evidence_lines(analysis: ReportEvidence) -> list[str]:
+    schema, quality = analysis.schema_evidence, analysis.quality_evidence
+    lines: list[str] = []
+    if quality:
+        lines += [
+            "",
+            "### Data quality",
+            "",
+            f"- Duplicate rows beyond the first copy: {quality.duplicate_rows}",
+        ]
+        lines.append(
+            f"- Missing cells before filtering: {sum(quality.missing_by_column.values())}"
+        )
+        lines.append(
+            f"- Infinite numeric values before filtering: {sum(quality.infinite_by_column.values())}"
+        )
+        if quality.duplicate_rows:
+            lines.append(
+                "- Exact duplicates were flagged, not removed. Check whether repeated rows cross the train/test split before relying on these metrics."
+            )
+    if schema:
+        lines += [
+            "",
+            "### Schema",
+            "",
+            "| Column | Inferred type | Modeling role | Missing | Infinite |",
+            "| --- | --- | --- | ---: | ---: |",
+        ]
+        for field in schema:
+            missing = quality.missing_by_column.get(field.name, 0) if quality else "N/A"
+            infinite = (
+                quality.infinite_by_column.get(field.name, 0) if quality else "N/A"
+            )
+            lines.append(
+                f"| {markdown_text(field.name)} | {field.kind} | {field.role} | {missing} | {infinite} |"
+            )
+    return lines
+
+
 def render_report(
-    analysis: AnalysisResult, sections: ReportSections, directory: Path
+    analysis: ReportEvidence, sections: ReportSections, directory: Path
 ) -> str:
     dataset = analysis.dataset
     evaluation = analysis.evaluation
@@ -83,6 +123,7 @@ def render_report(
         "## Findings",
         "",
         markdown_text(sections.findings),
+        *evidence_lines(analysis),
         "",
         "| Model | Test MAE ↓ | Test RMSE ↓ | Test R² ↑ |",
         "| --- | ---: | ---: | ---: |",
@@ -123,7 +164,7 @@ def render_report(
 
 
 def render_template_report(
-    analysis: AnalysisResult, directory: Path, *, note: str
+    analysis: ReportEvidence, directory: Path, *, note: str
 ) -> str:
     evaluation = analysis.evaluation
     comparison = evaluation.random_forest.mae - evaluation.baseline.mae
@@ -150,7 +191,7 @@ def run_report_agent(
     if not model.strip():
         raise ReportError("An Ollama model name is required")
     try:
-        analysis = AnalysisResult.model_validate_json(
+        analysis = ReportEvidence.model_validate_json(
             analysis_path.read_text(encoding="utf-8")
         )
     except (OSError, UnicodeError, ValidationError) as exc:

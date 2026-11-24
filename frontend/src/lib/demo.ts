@@ -20,30 +20,6 @@ export interface Conversation {
   project?: string;
 }
 
-export const suggestions = [
-  {
-    icon: 'spark',
-    title: 'Design a website',
-    prompt:
-      'Design a minimal coffee brand website that feels warm, natural, and a little unexpected.',
-    color: 'peach',
-  },
-  {
-    icon: 'brain',
-    title: 'Build a learning plan',
-    prompt:
-      'Help me build a learning plan I can actually stick to. Break it down and help me find a manageable place to start.',
-    color: 'sage',
-  },
-  {
-    icon: 'code',
-    title: 'Write a Svelte component',
-    prompt:
-      'Write a simple Svelte to-do component with support for adding, completing, and deleting tasks. Explain the key implementation details.',
-    color: 'lavender',
-  },
-];
-
 export function seedConversations(): Conversation[] {
   return [
     {

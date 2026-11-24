@@ -101,7 +101,17 @@ def write_charts(result: AnalysisResult, actual, predicted, output_dir: Path) ->
 
 def run_data_scientist(config: AnalysisConfig, output_dir: Path) -> AnalysisResult:
     """Fit and evaluate a regression pipeline and write its artifacts to a run directory."""
-    data = read_dataset(config)
+    result = fit_data_scientist(read_dataset(config), config, output_dir)
+    (output_dir / ANALYSIS_FILE).write_text(
+        result.model_dump_json(indent=2) + "\n", encoding="utf-8"
+    )
+    return result
+
+
+def fit_data_scientist(
+    data: pd.DataFrame, config: AnalysisConfig, output_dir: Path
+) -> AnalysisResult:
+    """Train using a validated table and write the model and plots, not the evidence file."""
     available = data[config.target].notna()
     observed = data.loc[available, config.target]
     y = pd.to_numeric(observed, errors="coerce")
@@ -202,7 +212,4 @@ def run_data_scientist(config: AnalysisConfig, output_dir: Path) -> AnalysisResu
     output_dir.mkdir(parents=True, exist_ok=True)
     joblib.dump(model, output_dir / result.artifacts.model)
     write_charts(result, y_test, predicted, output_dir)
-    (output_dir / ANALYSIS_FILE).write_text(
-        result.model_dump_json(indent=2) + "\n", encoding="utf-8"
-    )
     return result

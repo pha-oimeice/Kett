@@ -11,23 +11,24 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field, ValidationError
 from starlette.concurrency import run_in_threadpool
-from starlette.datastructures import UploadFile
 
+from ..uploads import MAX_FILE_BYTES, one_file_form
 from .contracts import ANALYSIS_FILE, AnalysisConfig
+from .pipeline import collect_evidence
 from .report import ReportError, render_template_report, run_report_agent
-from .scientist import AnalysisError, run_data_scientist
+from .scientist import AnalysisError
 
-MAX_FILE_BYTES = 5 * 1024 * 1024
-MAX_FORM_BYTES = MAX_FILE_BYTES + 64 * 1024
 MAX_ROWS = 25_000
 MAX_FEATURES = 32
 MAX_COLUMNS = 128
+active_run = Lock()
 Delimiter = Literal[",", ";", "\t"]
 
 
 class TableColumns(BaseModel):
     columns: list[str]
     delimiter: Delimiter
+    rows: int
     max_features: int = MAX_FEATURES
 
 
@@ -45,33 +46,13 @@ class ReportResponse(BaseModel):
 
 @asynccontextmanager
 async def table_form(request: Request):
-    if (
-        request.headers.get("content-type", "").split(";", 1)[0]
-        != "multipart/form-data"
+    async with one_file_form(request, file_limit=MAX_FILE_BYTES) as (
+        name,
+        content,
+        form,
     ):
-        raise HTTPException(415, "Use a multipart form with one CSV or TSV file")
-    if "transfer-encoding" in request.headers:
-        raise HTTPException(411, "Dataset uploads must have a fixed Content-Length")
-    try:
-        length = int(request.headers.get("content-length", ""))
-    except ValueError:
-        raise HTTPException(
-            411, "Content-Length is required for dataset uploads"
-        ) from None
-    if not 0 < length <= MAX_FORM_BYTES:
-        raise HTTPException(413, "Dataset uploads are limited to 5 MiB")
-    async with request.form(max_files=1, max_fields=1, max_part_size=16 * 1024) as form:
-        upload = form.get("file")
-        if not isinstance(upload, UploadFile) or not upload.filename:
-            raise HTTPException(422, "Select one CSV or TSV file")
-        name = upload.filename.replace("\\", "/").rsplit("/", 1)[-1]
         if Path(name).suffix.lower() not in {".csv", ".tsv"}:
             raise HTTPException(415, "Only structured CSV or TSV files are supported")
-        if len(name) > 200:
-            raise HTTPException(422, "Dataset filename is too long")
-        content = await upload.read(MAX_FILE_BYTES + 1)
-        if len(content) > MAX_FILE_BYTES:
-            raise HTTPException(413, "Dataset uploads are limited to 5 MiB")
         yield name, content, form.get("options")
 
 
@@ -129,7 +110,7 @@ def inspect_table(name: str, content: bytes) -> TableColumns:
         ) from None
     if not count:
         raise HTTPException(422, "The table has no data rows")
-    return TableColumns(columns=columns, delimiter=delimiter)
+    return TableColumns(columns=columns, delimiter=delimiter, rows=count)
 
 
 def generate_report(
@@ -153,7 +134,7 @@ def generate_report(
             raise HTTPException(422, exc.errors()[0]["msg"]) from None
         dataset_path.write_bytes(content)
         try:
-            analysis = run_data_scientist(config, directory)
+            analysis = collect_evidence(config, directory)
         except AnalysisError as exc:
             detail = (
                 str(exc)
@@ -190,11 +171,22 @@ def generate_report(
         return ReportResponse(report=report, mode=mode)
 
 
+async def run_analysis_pipeline(
+    name: str, content: bytes, options: ReportOptions
+) -> ReportResponse:
+    # Direct uploads and chat tool calls share the same worker limit.
+    if not active_run.acquire(blocking=False):
+        raise HTTPException(503, "Another report is running. Please try again shortly.")
+    try:
+        return await run_in_threadpool(generate_report, name, content, options)
+    finally:
+        active_run.release()
+
+
 def create_analysis_router(require_same_origin: Callable) -> APIRouter:
     router = APIRouter(
         prefix="/api/analysis", dependencies=[Depends(require_same_origin)]
     )
-    active_run = Lock()
 
     @router.post("/columns")
     async def columns(request: Request) -> TableColumns:
@@ -212,13 +204,6 @@ def create_analysis_router(require_same_origin: Callable) -> APIRouter:
                 raise HTTPException(
                     422, f"Specify a target column and 1–{MAX_FEATURES} feature columns"
                 ) from None
-        if not active_run.acquire(blocking=False):
-            raise HTTPException(
-                503, "Another report is running. Please try again shortly."
-            )
-        try:
-            return await run_in_threadpool(generate_report, name, content, options)
-        finally:
-            active_run.release()
+        return await run_analysis_pipeline(name, content, options)
 
     return router

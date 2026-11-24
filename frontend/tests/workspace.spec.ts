@@ -7,7 +7,7 @@ test.beforeEach(async ({ page }) => {
   await expect(page.getByRole('heading', { level: 1 })).toBeVisible();
 });
 
-test('new conversation, suggestions, empty model menu and keyboard composer', async ({
+test('new conversation has no suggested prompts and keeps the keyboard composer', async ({
   page,
 }) => {
   await expect(page.locator('html')).toHaveAttribute('lang', 'en');
@@ -28,10 +28,12 @@ test('new conversation, suggestions, empty model menu and keyboard composer', as
   await expect(
     page.getByRole('button', { name: 'Send message', exact: true }),
   ).toBeDisabled();
-  await page.getByRole('button', { name: 'Design a website' }).click();
-  await expect(page.getByRole('textbox', { name: 'Message Kett' })).toHaveValue(
-    /coffee/,
-  );
+  await expect(
+    page.getByRole('heading', { name: 'Suggested prompts' }),
+  ).toHaveCount(0);
+  const composer = page.getByRole('textbox', { name: 'Message Kett' });
+  await expect(composer).toHaveValue('');
+  await composer.fill('Hello');
   const modelButton = page.getByRole('button', { name: 'Select model' });
   const modelMenu = page.locator('.model-menu');
   await modelButton.click();
@@ -180,7 +182,9 @@ test('creates a local project and starts a scoped conversation', async ({
 test('downloads sample HTML directly from the conversation', async ({
   page,
 }) => {
-  await page.getByRole('button', { name: 'Design a website' }).click();
+  await page
+    .getByRole('textbox', { name: 'Message Kett' })
+    .fill('Design a website');
   await page.getByRole('button', { name: 'Send message', exact: true }).click();
   const download = page
     .getByRole('log')
@@ -230,70 +234,111 @@ test('clearing history requires confirmation', async ({ page }) => {
   await expect(page.locator('.history-item')).toHaveCount(0);
 });
 
-test('unstructured files are rejected without an upload', async ({ page }) => {
-  await page.route('**/api/analysis/**', () => {
-    throw new Error('Unsupported files must not be uploaded');
-  });
-  await page.getByLabel('Choose attachments').setInputFiles({
-    name: 'ideas.txt',
-    mimeType: 'text/plain',
-    buffer: Buffer.from('A new idea'),
-  });
-  await expect(page.getByRole('alert')).toHaveText(
-    'Only structured CSV or TSV files are supported.',
-  );
-  await expect(page.locator('.attachment')).toHaveCount(0);
-  await expect(
-    page.getByRole('button', { name: 'Send message', exact: true }),
-  ).toBeDisabled();
-});
-
-test('uploads a table, configures the columns and downloads the report', async ({
+test('accepts an arbitrary attachment and sends it through general chat', async ({
   page,
 }) => {
-  await page.route('**/api/analysis/columns', async (route) => {
+  await page.route('**/api/models', (route) =>
+    route.fulfill({ json: ['general'] }),
+  );
+  await page.reload();
+  await page.route('**/api/chat/attachments', async (route) => {
+    const body = route.request().postData()!;
+    expect(body).toContain('filename="slides.pdf"');
+    expect(body).toContain('%PDF-1.7');
+    expect(body).toContain('Summarize these slides');
+    await route.fulfill({
+      body:
+        JSON.stringify({ type: 'text', text: 'I cannot read this PDF.' }) +
+        '\n',
+    });
+  });
+  await page.getByLabel('Choose attachments').setInputFiles({
+    name: 'slides.pdf',
+    mimeType: 'application/pdf',
+    buffer: Buffer.from('%PDF-1.7'),
+  });
+  await expect(page.locator('.attachment')).toContainText('slides.pdf');
+  const send = page.getByRole('button', { name: 'Send message', exact: true });
+  await expect(send).toBeDisabled();
+  await page.getByRole('button', { name: 'Select model' }).click();
+  await page.getByRole('button', { name: 'general', exact: true }).click();
+  await page.getByLabel('Message Kett').fill('Summarize these slides');
+  await send.click();
+  await expect(page.locator('.assistant .markdown')).toHaveText(
+    'I cannot read this PDF.',
+  );
+  await expect(
+    page.getByRole('button', { name: 'Download report' }),
+  ).toHaveCount(0);
+  await page.getByRole('button', { name: 'Remove slides.pdf' }).click();
+  await expect(page.locator('.attachment')).toHaveCount(0);
+});
+
+test('uses a separate Report Agent model for a follow-up about the attached table', async ({
+  page,
+}) => {
+  await page.route('**/api/models', (route) =>
+    route.fulfill({ json: ['general', 'writer'] }),
+  );
+  await page.reload();
+  const settings = page.getByRole('button', {
+    name: 'Open workspace settings',
+  });
+  await settings.click();
+  await page.getByRole('tab', { name: 'Tools' }).click();
+  const reportModel = page.getByRole('combobox', {
+    name: /Report Agent model/,
+  });
+  await expect(reportModel).toHaveValue('');
+  await reportModel.selectOption('writer');
+  await page.reload();
+  await settings.click();
+  await page.getByRole('tab', { name: 'Tools' }).click();
+  await expect(reportModel).toHaveValue('writer');
+  await page.getByRole('button', { name: 'Close settings' }).click();
+  await page.getByRole('button', { name: 'Select model' }).click();
+  await page.getByRole('button', { name: 'general', exact: true }).click();
+
+  let requests = 0;
+  await page.route('**/api/chat/attachments', async (route) => {
     const body = route.request().postData()!;
     expect(body).toContain('filename="grades.csv"');
     expect(body).toContain('score,hours,practice');
-    await route.fulfill({
-      json: {
-        columns: ['score', 'hours', 'practice'],
-        delimiter: ',',
-        max_features: 32,
-      },
-    });
-  });
-  await page.route('**/api/analysis/report', async (route) => {
-    const body = route.request().postData()!;
-    expect(body).toContain('8,1,2');
-    expect(body).toContain(
-      '"target":"score","features":["hours"],"prediction_context":"Before the exam"',
-    );
-    await route.fulfill({
-      json: {
-        mode: 'template',
-        report:
-          '## Executive Summary\n\nReport for grades.csv\n\n![Chart](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j0xkAAAAASUVORK5CYII=)',
-      },
-    });
+    expect(body).toContain('"model":"general"');
+    expect(body).toContain('"report_model":"writer"');
+    expect(body).toContain('"mat_enabled":true');
+    const event =
+      ++requests === 1
+        ? {
+            type: 'text',
+            text: 'Which column do you want to predict, and which features should I use?',
+          }
+        : {
+            type: 'report',
+            mode: 'ollama',
+            report:
+              '## Executive Summary\n\nReport for grades.csv\n\n![Chart](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j0xkAAAAASUVORK5CYII=)',
+          };
+    if (requests === 2) {
+      expect(body).toContain('Build a model for this table');
+      expect(body).toContain('Predict score using hours');
+    }
+    await route.fulfill({ body: JSON.stringify(event) + '\n' });
   });
   await page.getByLabel('Choose attachments').setInputFiles({
     name: 'grades.csv',
     mimeType: 'text/csv',
     buffer: Buffer.from('score,hours,practice\n8,1,2\n'),
   });
-  const generate = page.getByRole('button', { name: 'Generate report' });
-  await expect(generate).toBeDisabled();
-  await page.getByRole('checkbox', { name: 'score' }).check();
-  await page.getByLabel('Target column (numeric)').selectOption('score');
-  await expect(page.getByRole('checkbox', { name: 'score' })).toBeDisabled();
-  await expect(page.getByRole('checkbox', { name: 'score' })).not.toBeChecked();
-  await expect(generate).toBeDisabled();
-  await page.getByRole('checkbox', { name: 'hours' }).check();
-  await page
-    .getByLabel('Prediction context (optional)')
-    .fill('Before the exam');
-  await generate.click();
+  const prompt = page.getByLabel('Message Kett');
+  await prompt.fill('Build a model for this table');
+  await prompt.press('Enter');
+  await expect(page.locator('.assistant .markdown')).toContainText(
+    'Which column',
+  );
+  await expect(page.locator('.attachment')).toContainText('grades.csv');
+  await prompt.fill('Predict score using hours');
+  await prompt.press('Enter');
   await expect(
     page.getByRole('heading', { name: 'Executive Summary' }),
   ).toBeVisible();
@@ -304,6 +349,69 @@ test('uploads a table, configures the columns and downloads the report', async (
   const downloaded = page.waitForEvent('download');
   await page.getByRole('button', { name: 'Download report' }).click();
   expect((await downloaded).suggestedFilename()).toBe('report.md');
+});
+
+test('the Tools tab preserves the MAT switch across reloads and sends the preference', async ({
+  page,
+}) => {
+  await page.route('**/api/models', (route) =>
+    route.fulfill({ json: ['general'] }),
+  );
+  await page.reload();
+  const settings = page.getByRole('button', {
+    name: 'Open workspace settings',
+  });
+  const tools = page.getByRole('tab', { name: 'Tools' });
+  const toggle = page.getByRole('switch', {
+    name: 'Multi-Agent Data Analysis',
+  });
+  await settings.click();
+  await page.getByRole('tab', { name: 'General' }).focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(tools).toBeFocused();
+  await expect(tools).toHaveAttribute('aria-selected', 'true');
+  await expect(toggle).toBeChecked();
+  await toggle.click();
+  await expect(
+    page.getByRole('combobox', { name: /Report Agent model/ }),
+  ).toBeDisabled();
+  await page.reload();
+  await settings.click();
+  await tools.click();
+  await expect(toggle).not.toBeChecked();
+  await page.getByRole('button', { name: 'Close settings' }).click();
+  await page.getByRole('button', { name: 'Select model' }).click();
+  await page.getByRole('button', { name: 'general', exact: true }).click();
+  let requests = 0;
+  await page.route('**/api/chat/attachments', (route) => {
+    requests += 1;
+    expect(route.request().postData()).toContain(
+      `"mat_enabled":${requests > 1}`,
+    );
+    return route.fulfill({
+      body:
+        JSON.stringify({ type: 'text', text: `Replied ${requests}` }) + '\n',
+    });
+  });
+  await page
+    .getByLabel('Choose attachments')
+    .setInputFiles({
+      name: 'grades.csv',
+      mimeType: 'text/csv',
+      buffer: Buffer.from('score,hours\n8,1\n'),
+    });
+  const prompt = page.getByLabel('Message Kett');
+  await prompt.fill('What are the columns?');
+  await prompt.press('Enter');
+  await expect(page.getByText('Replied 1', { exact: true })).toBeVisible();
+  await settings.click();
+  await tools.click();
+  await toggle.click();
+  await expect(toggle).toBeChecked();
+  await page.getByRole('button', { name: 'Close settings' }).click();
+  await prompt.fill('What are the columns?');
+  await prompt.press('Enter');
+  await expect(page.getByText('Replied 2', { exact: true })).toBeVisible();
 });
 
 test('mobile layout, drawer navigation and composer stay within the viewport', async ({

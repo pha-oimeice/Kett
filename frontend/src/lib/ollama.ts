@@ -12,7 +12,8 @@ export interface Source {
 export type ChatEvent =
   | { type: 'text'; text: string }
   | { type: 'status'; text: string }
-  | { type: 'sources'; sources: Source[] };
+  | { type: 'sources'; sources: Source[] }
+  | { type: 'report'; report: string; mode: 'ollama' | 'template' };
 
 export async function listChatModels(signal?: AbortSignal): Promise<string[]> {
   const response = await fetch('/api/models', { signal, cache: 'no-store' });
@@ -20,7 +21,11 @@ export async function listChatModels(signal?: AbortSignal): Promise<string[]> {
     throw new Error('Could not load models from the configured server.');
   const data = await response.json();
   return Array.isArray(data)
-    ? data.filter((name) => typeof name === 'string')
+    ? [
+        ...new Set(
+          data.filter((name): name is string => typeof name === 'string'),
+        ),
+      ]
     : [];
 }
 
@@ -29,17 +34,51 @@ export async function* streamChat(
   messages: ChatMessage[],
   search: boolean,
   signal: AbortSignal,
+  attachment?: { file: File; matEnabled: boolean; reportModel?: string },
 ): AsyncGenerator<ChatEvent> {
-  const response = await fetch('/api/chat', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model, messages, search }),
-    signal,
-  });
+  let response: Response;
+  if (attachment) {
+    const body = new FormData();
+    body.append('file', attachment.file);
+    const recent = messages
+      .slice(-12)
+      .map((message, index, history) =>
+        index === history.length - 1
+          ? message
+          : { ...message, content: message.content.slice(0, 2500) },
+      );
+    body.append(
+      'options',
+      JSON.stringify({
+        model,
+        messages: recent,
+        mat_enabled: attachment.matEnabled,
+        report_model: attachment.reportModel,
+      }),
+    );
+    response = await fetch('/api/chat/attachments', {
+      method: 'POST',
+      body,
+      signal,
+    });
+  } else {
+    response = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, messages, search }),
+      signal,
+    });
+  }
   if (!response.ok || !response.body) {
+    if (response.status === 403) {
+      throw new Error(
+        'the backend does not trust this address; open Kett at the APP_ORIGIN address (http://localhost:5173 by default)',
+      );
+    }
+    const data = await response.json().catch(() => null);
     throw new Error(
-      response.status === 403
-        ? 'the backend does not trust this address; open Kett at the APP_ORIGIN address (http://localhost:5173 by default)'
+      typeof data?.detail === 'string'
+        ? data.detail
         : `the Kett backend returned ${response.status}`,
     );
   }

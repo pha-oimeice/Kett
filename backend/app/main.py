@@ -13,6 +13,7 @@ from sqlalchemy import delete, event
 from sqlalchemy.dialects.sqlite import insert
 from sqlmodel import Session, SQLModel, create_engine
 
+from .attachment_chat import create_attachment_router
 from .chat import create_router
 from .google import verify_credential
 from .models import BrowserSession, GoogleChallenge, GoogleCredential, User, UserProfile
@@ -234,6 +235,7 @@ def create_app(
         response.delete_cookie(CHALLENGE_COOKIE, **cookie_options)
 
     app.include_router(create_router(require_same_origin, http_transport))
+    app.include_router(create_attachment_router(require_same_origin, http_transport))
     app.include_router(create_analysis_router(require_same_origin))
     return app
 

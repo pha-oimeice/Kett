@@ -1,10 +1,10 @@
 # Kett
 
-聊天界面使用 Svelte / Vite，账号认证使用 Python / FastAPI。后端以 SQLModel 管理 SQLite 中的用户和登录会话；聊天记录、项目和主题仍仅保存在当前浏览器中，**不会按账号同步或隔离**。
+Kett is a Svelte and Vite chat workspace backed by FastAPI. The backend uses SQLModel and SQLite for user accounts and sign-in sessions. Conversations, projects, and themes are stored in the current browser; they are **not synced or isolated by account**.
 
-## 本地启动
+## Run locally
 
-建议使用 Python 3.11+（SQLite 3.35+）和 Node.js 22+。首次在项目根目录安装依赖：
+Use Python 3.11+ with SQLite 3.35+ and Node.js 22+. Install dependencies from the repository root:
 
 ```bash
 python -m venv backend/.venv
@@ -12,46 +12,51 @@ backend/.venv/bin/python -m pip install -r backend/requirements.txt
 npm --prefix frontend ci
 ```
 
-Windows PowerShell 将第二行换为 `.\backend\.venv\Scripts\python.exe -m pip install -r backend/requirements.txt`（不需要激活虚拟环境）。
+In Windows PowerShell, replace the second line with `.\backend\.venv\Scripts\python.exe -m pip install -r backend/requirements.txt`. You do not need to activate the virtual environment.
 
-安装完成后，在项目根目录运行：
+Start both services from the repository root:
 
 ```bash
 python start.py
 ```
 
-脚本同时启动前端 `http://localhost:5173` 和后端 `http://127.0.0.1:8000`（API 文档在 `/docs`）。按 `Ctrl+C` 停止两端。如果任一服务退出，脚本会停止另一端。后端首次启动会创建 `backend/kett.sqlite3`，可通过 `DATABASE_URL` 指定其他 SQLite 文件。
+The frontend runs at `http://localhost:5173` and the backend at `http://127.0.0.1:8000` (OpenAPI docs at `/docs`). Press `Ctrl+C` to stop both. If either service exits, the script stops the other. The backend creates `backend/kett.sqlite3` on first startup; set `DATABASE_URL` to use a different SQLite file.
 
-## 本地启用 Google 登录（可选）
+## Enable Google sign-in locally (optional)
 
-1. 在 Google Cloud 创建 **Web application** 类型的 OAuth 客户端，将 `http://localhost:5173` 添加到 **Authorized JavaScript origins**。弹窗登录不需要客户端密钥或重定向 URI。如果应用处于测试模式，将登录账号添加到测试用户列表。
-2. 在运行 `python start.py` 的终端设置 `GOOGLE_CLIENT_ID`：PowerShell 用 `$env:GOOGLE_CLIENT_ID = 'your-client-id.apps.googleusercontent.com'`，Bash 用 `export GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com`。前后端共用该值，无须再创建 `frontend/.env.local`。如果前端独立构建或启动，且进程没有收到 `GOOGLE_CLIENT_ID`，可用 `VITE_GOOGLE_CLIENT_ID` 设置与后端相同的公开 Client ID。
-3. 运行 `python start.py`，打开 `http://localhost:5173`，在 **Settings** 中使用 Google 登录。如果用 `127.0.0.1` 访问，Google 授权来源和后端的 `APP_ORIGIN` 都要改为 `http://127.0.0.1:5173`。
+1. In Google Cloud, create a **Web application** OAuth client and add `http://localhost:5173` to **Authorized JavaScript origins**. The popup flow does not require a client secret or redirect URI. If the app is in testing mode, add the accounts you intend to use as test users.
+2. Set `GOOGLE_CLIENT_ID` in the shell that runs `python start.py`: use `$env:GOOGLE_CLIENT_ID = 'your-client-id.apps.googleusercontent.com'` in PowerShell or `export GOOGLE_CLIENT_ID=your-client-id.apps.googleusercontent.com` in Bash. The frontend and backend share this value. If you run or build the frontend separately without that variable, use `VITE_GOOGLE_CLIENT_ID` with the same public client ID as the backend.
+3. Run `python start.py`, open `http://localhost:5173`, and sign in from **Workspace settings**. If you use `127.0.0.1` instead, set both the Google authorized origin and the backend's `APP_ORIGIN` to `http://127.0.0.1:5173`.
 
-如果设置里显示 **Try demo sign-in**，说明前端没有读到 Client ID。演示不会弹出 Google、不访问后端，也不会生成有效会话。设置变量后需重启 `python start.py`；已部署的静态前端需要重新构建。
+If settings shows **Try demo sign-in**, the frontend has not received a client ID. Demo sign-in does not open Google, contact the backend, or create a valid session. After changing the environment variable, restart `python start.py` or rebuild the deployed static frontend.
 
-## 认证流程
+## Authentication
 
-- `POST /api/auth/google/challenge` 发放有效期为 10 分钟的一次性挑战。
-- `POST /api/auth/google` 接收 Google ID Token，验证签名、签发方、受众、有效期及挑战值。通过后按 Google `sub` 创建或更新 `users` 表中的用户，不使用邮箱匹配账户。
-- `GET /api/auth/me` 根据 `HttpOnly` Cookie 查验后端会话，未登录或已过期返回 `401`。会话有效期为 7 天，数据库仅保存会话令牌的哈希，不保存 Google ID Token。
-- `POST /api/auth/logout` 撤销当前 Kett 会话，不影响 Google 账号的登录状态。
+- `POST /api/auth/google/challenge` issues a single-use challenge valid for 10 minutes.
+- `POST /api/auth/google` verifies the Google ID token's signature, issuer, audience, expiration, and challenge. It creates or updates the user by Google's `sub` claim, not by email address.
+- `GET /api/auth/me` checks the backend session using an `HttpOnly` cookie. It returns `401` for a missing or expired session. Sessions last seven days. The database stores only a hash of the session token, not the Google ID token.
+- `POST /api/auth/logout` revokes the current Kett session without signing the user out of Google.
 
-开发时 Vite 将 `/api` 代理到 `127.0.0.1:8000`。部署时让静态前端和 `/api` 通过同一 HTTPS 来源提供服务，将 `APP_ORIGIN` 设为该公开来源，以启用 `Secure` Cookie。后端需能访问 `www.googleapis.com` 获取 Google 公钥。
+In development, Vite proxies `/api` to `127.0.0.1:8000`. In production, serve the frontend and `/api` from the same HTTPS origin and set `APP_ORIGIN` to that public origin to enable secure cookies. The backend needs access to `www.googleapis.com` to fetch Google's public keys.
 
-## 添加模型
+## Add models
 
-展开 **Select model**，点击 **Add model（+）**，可以发现并选择页面打开后新增到 Ollama 的模型。模型需已安装在后端配置的 `OLLAMA_URL` 服务器上（默认 `http://127.0.0.1:11434`）。前端不能输入自定义服务器地址，也不会替服务器下载模型。
+Open **Select model** and click **Add model (+)** to discover models installed since the page loaded. Models must already be installed on the Ollama server configured by the backend's `OLLAMA_URL` (default: `http://127.0.0.1:11434`). The frontend cannot set a custom server address or download models.
 
-## 学生成绩分析 Agent
+## Student performance analysis
 
-启动 Kett，在输入框旁点击 **Upload dataset**（+），上传带表头的 UTF-8 `.csv` 或 `.tsv`。选择一个数值型 **Target column** 和至少一个 **Feature column**，可填写预测时点，然后点击 **Generate report**。后端自动校验数据、训练并评估模型、生成五节报告。报告在对话中展示，可以下载 `report.md`（包含两张内嵌图表）。
+Choose a general-purpose Ollama model that supports tool calling under **Select model**. Use **+** to add a file, then ask a question. For example, ask “What columns are in this table?” to inspect it without training a model, or “Use `G1` and `G2` to predict `G3` and generate a report.” The main model selects a tool based on the request and asks for clarification if the target or features are unclear. The file stays attached for follow-up questions until you remove it. You can view the report in chat or download `report.md` with embedded charts.
 
-- 只接受结构化 CSV/TSV，支持逗号、分号或制表符分隔；Excel 文件需先导出为 CSV。单个文件上限 5 MiB、25,000 行、128 列，每次最多选择 32 个特征。
-- 选中 Ollama 模型时，用该模型写报告正文；没有选择或模型调用失败时，返回标注为模板的报告，指标和图表仍来自真实训练结果。原始数据不会发送给 Ollama，后端处理完毕后删除临时文件。
-- API：`POST /api/analysis/columns` 和 `POST /api/analysis/report` 均接收 `multipart/form-data` 的 `file` 文件字段。报告接口另需 `options` 字段（JSON，如 `{"target":"G3","features":["G1","G2"]}`；可选 `prediction_context`、`model`）。
+- Chat accepts one file of any type at a time, up to 5 MiB. Tools can inspect UTF-8 CSV or TSV with a header (up to 25,000 rows, 128 columns, and 32 training features), or read the first 12,000 characters of UTF-8 text. PDF, Excel, and image contents are not parsed. Web search is not available on turns with attachments.
+- **Workspace settings → Tools → Multi-Agent Data Analysis** controls whether the main model can invoke the report pipeline. It is enabled by default, and the preference is saved in this browser. Turning it off does not disable ordinary chat, table inspection, or text reading. The same tab lets you set a separate **Report Agent model**, which defaults to the main model.
+- The report pipeline runs schema inspection, data quality checks, and regression on the same parsed table. Their evidence is combined in `analysis.json` before report generation. The three evidence-producing agents run in Python; the Report Agent uses Ollama to write narrative from aggregate evidence, with a labeled template as fallback. Raw table rows are not sent to Ollama. The separate text-reading tool sends an excerpt to the main model.
+- `POST /api/chat/attachments` accepts multipart fields `file` and `options` (JSON with `model`, `messages`, and optional `mat_enabled` and `report_model`) and returns NDJSON. `mat_enabled: false` removes the report tool from that chat request. The direct endpoints `POST /api/analysis/columns` and `POST /api/analysis/report` are independent of the chat preference. The report endpoint requires an `options` JSON field such as `{"target":"G3","features":["G1","G2"]}`.
 
-两个 Agent 也可独立调用。安装 `backend/requirements.txt` 后，从仓库根目录使用 Python 运行以下示例。先从 [UCI Student Performance](https://archive.ics.uci.edu/dataset/320/student+performance) 下载数据，解开下载包内的 `student.zip`，将 `student-mat.csv` 放在 `dataset/` 下。
+See the [target architecture](docs/multi_agent_pipeline_architecture.png), the [implemented tool workflow](docs/multi-agent-tool.md), and the [Data Scientist Agent decision record](docs/adr/0001-data-scientist-agent.md).
+
+### Run the agents independently
+
+After installing `backend/requirements.txt`, run this example from the repository root. Download the [UCI Student Performance dataset](https://archive.ics.uci.edu/dataset/320/student+performance), extract the nested `student.zip`, and place `student-mat.csv` in `dataset/`.
 
 ```python
 from pathlib import Path
@@ -60,9 +65,9 @@ from backend.app.student_analysis.contracts import AnalysisConfig
 from backend.app.student_analysis.report import run_report_agent
 from backend.app.student_analysis.scientist import run_data_scientist
 
-run_dir = Path("runs/uci-math")  # 不同运行请使用不同目录
+run_dir = Path("runs/uci-math")  # Use a separate directory for each run.
 
-# Data Scientist Agent：不需要 Ollama。
+# Data Scientist Agent: does not require Ollama.
 run_data_scientist(
     AnalysisConfig(
         dataset_path=Path("dataset/student-mat.csv"),
@@ -75,15 +80,15 @@ run_data_scientist(
     run_dir,
 )
 
-# Report Agent：只读取 analysis.json；将 model 换成本机 `ollama list` 中的名称。
+# Report Agent: replace the model name with one listed by `ollama list`.
 run_report_agent(run_dir / "analysis.json", model="qwen2.5:7b")
 ```
 
-分析目录包含 `analysis.json`、`model.joblib`、`feature-importance.png` 和 `actual-vs-predicted.png`。Report Agent 将同目录中的图表链接进 `report.md`；Ollama 默认地址是 `http://127.0.0.1:11434`，可用 `OLLAMA_URL` 修改。报告生成失败不会删除分析产物，可以单独重跑报告。
+The run directory contains `analysis.json`, `model.joblib`, `feature-importance.png`, and `actual-vs-predicted.png`. The Report Agent reads `analysis.json` and links to the charts in `report.md`. If report generation fails, you can rerun it without retraining.
 
-分析目前支持 UTF-8 的回归 CSV：目标列必须是数值，至少有 10 个带目标值的样本和 2 个不同的目标值。更换数据集时修改数据路径、目标、特征和分隔符，无需改 Agent 代码；选特征时要确保它们在预测时点已经可用。
+The regression workflow requires a numeric target and at least 10 labeled rows with at least two distinct target values. To use a different dataset, change its path, target, features, and delimiter. Choose only features that are available at prediction time.
 
-## 测试
+## Tests
 
-- 后端：在 `backend/` 中运行 `python -m pip install -r requirements-dev.txt` 和 `python -m pytest`。测试用本地签名密钥替代 Google 公钥请求，不需要 Google 账号。
-- 前端：见 [frontend/README.md](frontend/README.md)。
+- **Backend:** From `backend/`, run `python -m pip install -r requirements-dev.txt` and `python -m pytest`. Authentication tests use local signing keys instead of contacting Google.
+- **Frontend:** See the [frontend guide](frontend/README.md).

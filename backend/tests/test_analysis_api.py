@@ -92,15 +92,24 @@ def test_upload_limits_and_origin(client, monkeypatch):
 
 
 def test_csv_report_contains_real_metrics_and_portable_charts(client):
-    response = upload(client, "report", options=OPTIONS)
+    response = upload(
+        client, "report", options=OPTIONS, content=TABLE + b"\n;30;\n0;0;A\n62;31;B"
+    )
     assert response.status_code == 200
     result = response.json()
     assert result["mode"] == "template"
     report = result["report"]
     assert "No Ollama model was selected" in report
-    assert "exam.csv (30 rows, 3 columns)" in report
+    assert "exam.csv (33 rows, 3 columns)" in report
     assert "Before the exam" in report
-    assert "24 training rows / 6 test rows" in report
+    assert "25 training rows / 7 test rows" in report
+    assert "### Data quality" in report
+    assert "Duplicate rows beyond the first copy: 1" in report
+    assert "Missing cells before filtering: 2" in report
+    assert "### Schema" in report
+    assert "| score | numeric | target | 1 | 0 |" in report
+    assert "| hours | numeric | feature | 0 | 0 |" in report
+    assert "| school | text | unused | 1 | 0 |" in report
     assert "| Random forest |" in report
     assert re.findall(r"^## (.+)$", report, re.MULTILINE) == [
         "Executive Summary",
