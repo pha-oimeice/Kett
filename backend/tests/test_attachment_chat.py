@@ -3,7 +3,8 @@ import json
 import httpx
 import pytest
 from app import main
-from app.student_analysis import api
+from app.student_analysis import api, report
+from app.student_analysis.basic import BasicEvidence
 from app.student_analysis.contracts import ReportEvidence
 from fastapi.testclient import TestClient
 
@@ -90,9 +91,19 @@ def test_table_inspection_does_not_train(client, ollama, monkeypatch):
 def test_regression_combines_three_evidence_branches_before_the_report_agent(
     client, ollama, monkeypatch
 ):
-    def report_agent(path, *, model):
+    levels = []
+    sections = report.ReportSections(
+        **{name: "Report narrative." for name in report.ReportSections.model_fields}
+    )
+
+    def report_agent(result, *, model):
         assert model == "writer"
-        result = ReportEvidence.model_validate_json(path.read_bytes())
+        if isinstance(result, BasicEvidence):
+            levels.append("basic")
+            assert result.statistics["hours"].count == 32
+            return sections
+        levels.append("advanced")
+        assert isinstance(result, ReportEvidence)
         assert result.dataset.filename == "exam.csv"
         assert result.features == ["hours"]
         assert result.target == "score"
@@ -112,14 +123,9 @@ def test_regression_combines_three_evidence_branches_before_the_report_agent(
             "school": 1,
         }
         assert result.evaluation.random_forest.mae < result.evaluation.baseline.mae
-        report_path = path.with_name("report.md")
-        report_path.write_text(
-            "## Findings\n![Feature importance](feature-importance.png)\n",
-            encoding="utf-8",
-        )
-        return report_path
+        return sections
 
-    monkeypatch.setattr(api, "run_report_agent", report_agent)
+    monkeypatch.setattr(report, "request_sections", report_agent)
     ollama.replies = [
         reply(
             tool="generate_regression_report",
@@ -131,12 +137,37 @@ def test_regression_combines_three_evidence_branches_before_the_report_agent(
         "Predict score from hours and write a report",
         content=TABLE + b"\n0;0;A\n;30;\n",
         report_model="writer",
+        report_levels=["basic", "advanced"],
     )
     assert len(ollama.calls) == 1
+    assert levels == ["basic", "advanced"]
     assert events[-1]["type"] == "report"
-    assert events[-1]["mode"] == "ollama"
-    assert "## Findings" in events[-1]["report"]
-    assert "data:image/png;base64," in events[-1]["report"]
+    basic, advanced = events[-1]["notebook"]["cells"]
+    assert [basic["id"], advanced["id"]] == levels
+    assert all(
+        cell["metadata"]["kett_report_mode"] == "ollama" for cell in (basic, advanced)
+    )
+    assert "## Findings" in advanced["source"]
+    assert "attachment:feature-importance.png" in advanced["source"]
+
+
+def test_attachment_request_rejects_no_report_levels(client, ollama):
+    response = client.post(
+        "/api/chat/attachments",
+        files={"file": ("exam.csv", TABLE)},
+        data={
+            "options": json.dumps(
+                {
+                    "model": "general",
+                    "messages": [{"role": "user", "content": "Write a report"}],
+                    "report_levels": [],
+                }
+            )
+        },
+    )
+    assert response.status_code == 422
+    assert "Select at least one valid report level" in response.json()["detail"]
+    assert not ollama.calls
 
 
 def test_disabled_analysis_is_not_advertised_or_executed(client, ollama, monkeypatch):

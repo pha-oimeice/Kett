@@ -1,4 +1,3 @@
-import base64
 import csv
 import io
 import tempfile
@@ -13,9 +12,16 @@ from pydantic import BaseModel, Field, ValidationError
 from starlette.concurrency import run_in_threadpool
 
 from ..uploads import MAX_FILE_BYTES, one_file_form
-from .contracts import ANALYSIS_FILE, AnalysisConfig
+from .contracts import (
+    DEFAULT_REPORT_LEVELS,
+    REPORT_LEVELS_ERROR,
+    AnalysisConfig,
+    ReportEvidence,
+    ReportLevels,
+)
+from .notebook import ReportNotebook, report_cell
 from .pipeline import collect_evidence
-from .report import ReportError, render_template_report, run_report_agent
+from .report import compose_report
 from .scientist import AnalysisError
 
 MAX_ROWS = 25_000
@@ -37,11 +43,11 @@ class ReportOptions(BaseModel):
     features: list[str] = Field(min_length=1, max_length=MAX_FEATURES)
     prediction_context: str = Field(default="", max_length=500)
     model: str | None = Field(default=None, max_length=200)
+    report_levels: ReportLevels = DEFAULT_REPORT_LEVELS
 
 
 class ReportResponse(BaseModel):
-    report: str
-    mode: Literal["ollama", "template"]
+    notebook: ReportNotebook
 
 
 @asynccontextmanager
@@ -134,7 +140,7 @@ def generate_report(
             raise HTTPException(422, exc.errors()[0]["msg"]) from None
         dataset_path.write_bytes(content)
         try:
-            analysis = collect_evidence(config, directory)
+            reports = collect_evidence(config, directory, options.report_levels)
         except AnalysisError as exc:
             detail = (
                 str(exc)
@@ -144,31 +150,20 @@ def generate_report(
             raise HTTPException(422, detail) from None
         except ValueError:
             raise HTTPException(
-                422, "The dataset could not be modeled with these columns"
+                422, "The dataset could not be analyzed with these columns"
             ) from None
 
-        mode: Literal["ollama", "template"] = "template"
-        note = "No Ollama model was selected."
-        if options.model and options.model.strip():
-            try:
-                path = run_report_agent(directory / ANALYSIS_FILE, model=options.model)
-                report = path.read_text(encoding="utf-8")
-                mode = "ollama"
-            except ReportError:
-                note = "The selected Ollama model could not generate the report."
-        if mode == "template":
-            report = render_template_report(analysis, directory, note=note)
-
-        # Embed the plots so the browser and the downloaded report outlive the temp files.
-        for label, chart in (
-            ("Feature importance", analysis.artifacts.importance_chart),
-            ("Actual vs. predicted", analysis.artifacts.prediction_chart),
-        ):
-            image = base64.b64encode((directory / chart).read_bytes()).decode("ascii")
-            report = report.replace(
-                f"![{label}]({chart})", f"![{label}](data:image/png;base64,{image})"
-            )
-        return ReportResponse(report=report, mode=mode)
+        cells = []
+        for level, evidence in reports.items():
+            markdown, mode = compose_report(evidence, directory, model=options.model)
+            charts = ()
+            if isinstance(evidence, ReportEvidence):
+                charts = (
+                    directory / evidence.artifacts.importance_chart,
+                    directory / evidence.artifacts.prediction_chart,
+                )
+            cells.append(report_cell(level, markdown, mode, charts))
+        return ReportResponse(notebook=ReportNotebook(cells=cells))
 
 
 async def run_analysis_pipeline(
@@ -200,7 +195,11 @@ def create_analysis_router(require_same_origin: Callable) -> APIRouter:
                 options = ReportOptions.model_validate_json(
                     raw_options if isinstance(raw_options, str) else "{}"
                 )
-            except ValidationError:
+            except ValidationError as exc:
+                if any(
+                    error["loc"][:1] == ("report_levels",) for error in exc.errors()
+                ):
+                    raise HTTPException(422, REPORT_LEVELS_ERROR) from None
                 raise HTTPException(
                     422, f"Specify a target column and 1–{MAX_FEATURES} feature columns"
                 ) from None

@@ -18,6 +18,7 @@
     type Conversation,
     type Message,
   } from './lib/demo';
+  import { notebookMarkdown, type ReportLevel } from './lib/notebook';
   import { listChatModels, streamChat } from './lib/ollama';
 
   let conversations = $state<Conversation[]>(seedConversations());
@@ -30,6 +31,19 @@
   let settingsOpen = $state(false);
   let settingsTab = $state<'general' | 'tools'>('general');
   let matEnabled = $state(true);
+  const reportLevelOptions = [
+    {
+      id: 'basic',
+      label: 'Basic',
+      description: 'Mean, median, quartiles (Q1 and Q3), and IQR.',
+    },
+    {
+      id: 'advanced',
+      label: 'Advanced',
+      description: 'Model evaluation with MAE, RMSE, R², and charts.',
+    },
+  ] as const;
+  let reportLevels = $state<ReportLevel[]>(['basic']);
   const googleClientId = import.meta.env.VITE_GOOGLE_CLIENT_ID?.trim();
   const demoAccountKey = 'kett-google-demo-v1';
   type Account =
@@ -165,6 +179,12 @@
           reportModel = saved.reportModel;
         if (typeof saved.matEnabled === 'boolean')
           matEnabled = saved.matEnabled;
+        if (Array.isArray(saved.reportLevels)) {
+          const levels = reportLevelOptions
+            .map(({ id }) => id)
+            .filter((id) => saved.reportLevels.includes(id));
+          if (levels.length) reportLevels = levels;
+        }
         if (Array.isArray(saved.projects))
           projects = saved.projects
             .filter((p: unknown) => typeof p === 'string')
@@ -201,6 +221,7 @@
           projects,
           reportModel,
           matEnabled,
+          reportLevels,
         }),
       );
     } catch {
@@ -471,6 +492,7 @@
         ? {
             file,
             matEnabled,
+            reportLevels,
             reportModel:
               matEnabled && models.includes(reportModel)
                 ? reportModel
@@ -492,7 +514,8 @@
           if (event.type === 'status') searchStatus = event.text;
           else if (event.type === 'sources') message.sources = event.sources;
           else if (event.type === 'report') {
-            message.content = event.report;
+            message.notebook = event.notebook;
+            message.content = notebookMarkdown(event.notebook, false);
             message.datasetRun = 'report';
           } else message.content += event.text;
           await tick();
@@ -670,6 +693,12 @@
     };
   }
 
+  function messageMarkdown(message: Message) {
+    return message.notebook
+      ? notebookMarkdown(message.notebook)
+      : message.content;
+  }
+
   function renderMarkdown(text: string) {
     return DOMPurify.sanitize(
       marked.parse(text, { breaks: true, async: false }) as string,
@@ -818,7 +847,7 @@
                 active!.messages
                   .map(
                     (m) =>
-                      `## ${m.role === 'user' ? 'You' : 'Kett'}\n\n${m.content}`,
+                      `## ${m.role === 'user' ? 'You' : 'Kett'}\n\n${messageMarkdown(m)}`,
                   )
                   .join('\n\n---\n\n'),
                 'kett-conversation.md',
@@ -885,7 +914,7 @@
                     {#if message.role === 'user'}<div class="user-text">
                         {message.content}
                       </div>{:else}<div class="markdown">
-                        {@html renderMarkdown(message.content)}
+                        {@html renderMarkdown(messageMarkdown(message))}
                       </div>
                       {#if !message.content && streaming}<span class="typing">
                           <i></i><i></i><i></i>
@@ -909,7 +938,17 @@
                             </a>
                           </li>{/each}
                       </ol>{/if}
-                    {#if message.datasetRun === 'report'}<button
+                    {#if message.notebook}<button
+                        class="artifact-download"
+                        onclick={() =>
+                          download(
+                            JSON.stringify(message.notebook, null, 2),
+                            'report.ipynb',
+                            'application/x-ipynb+json',
+                          )}
+                      >
+                        <Icon name="download" size={16} /> Download notebook
+                      </button>{:else if message.datasetRun === 'report'}<button
                         class="artifact-download"
                         onclick={() =>
                           download(
@@ -938,7 +977,8 @@
                           class="icon-button"
                           aria-label="Copy response"
                           title="Copy response"
-                          onclick={() => copy(message.content, message.id)}
+                          onclick={() =>
+                            copy(messageMarkdown(message), message.id)}
                         >
                           <Icon
                             name={copiedId === message.id ? 'check' : 'copy'}
@@ -1254,8 +1294,8 @@
                 <span>
                   <strong>Multi-Agent Data Analysis</strong>
                   <small id="mat-description">
-                    Checks table structure and quality, trains a regression
-                    model, and writes a report.
+                    Checks table quality and writes a notebook. Advanced reports
+                    also train and evaluate a regression model.
                   </small>
                 </span>
                 <input
@@ -1266,6 +1306,42 @@
                   bind:checked={matEnabled}
                 />
               </label>
+            </div>
+            <div class="setting-row">
+              <fieldset
+                class="report-level-setting"
+                disabled={!matEnabled}
+                aria-describedby="report-level-help"
+              >
+                <legend>Report detail level</legend>
+                <small id="report-level-help">
+                  Choose at least one. Each level gets its own report in the
+                  same notebook.
+                </small>
+                {#each reportLevelOptions as level (level.id)}
+                  {@const checked = reportLevels.includes(level.id)}
+                  <label class="tool-toggle">
+                    <span>
+                      {level.label}<small id={`report-level-${level.id}`}>
+                        {level.description}
+                      </small>
+                    </span>
+                    <input
+                      type="checkbox"
+                      role="switch"
+                      aria-label={level.label}
+                      aria-describedby={`report-level-${level.id}`}
+                      {checked}
+                      disabled={checked && reportLevels.length === 1}
+                      onchange={(event) => {
+                        reportLevels = event.currentTarget.checked
+                          ? [...reportLevels, level.id]
+                          : reportLevels.filter((id) => id !== level.id);
+                      }}
+                    />
+                  </label>
+                {/each}
+              </fieldset>
             </div>
             <div class="setting-row">
               <label class="report-model-setting">

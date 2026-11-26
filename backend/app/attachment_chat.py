@@ -17,6 +17,11 @@ from .student_analysis.api import (
     inspect_table,
     run_analysis_pipeline,
 )
+from .student_analysis.contracts import (
+    DEFAULT_REPORT_LEVELS,
+    REPORT_LEVELS_ERROR,
+    ReportLevels,
+)
 from .uploads import one_file_form
 
 TEXT_EXCERPT_LIMIT = 12_000
@@ -41,6 +46,7 @@ Never fabricate tool results or metrics. If a tool returns an error, explain it 
 class AttachmentRequest(ChatRequest):
     mat_enabled: bool = True
     report_model: str | None = Field(default=None, max_length=200)
+    report_levels: ReportLevels = DEFAULT_REPORT_LEVELS
 
 
 class ReportArguments(BaseModel):
@@ -69,7 +75,7 @@ INSPECT = tool(
 READ = tool("read_text", "Read a bounded UTF-8 excerpt from the attached text file.")
 REPORT = tool(
     "generate_regression_report",
-    "Run the Multi-Agent Data Analysis Pipeline: inspect schema and quality, train and evaluate a regression model, then write an evidence-based report. Requires the exact target and features supplied by the user.",
+    "Generate an evidence-based notebook for the requested regression task, using the workspace settings to select descriptive statistics and/or model evaluation. Requires the exact target and features supplied by the user.",
     ReportArguments.model_json_schema(),
 )
 
@@ -226,6 +232,7 @@ async def respond_to_attachment(
                                 options = ReportOptions(
                                     **args.model_dump(),
                                     model=request.report_model or request.model,
+                                    report_levels=request.report_levels,
                                 )
                             except ValidationError:
                                 result = {
@@ -234,7 +241,11 @@ async def respond_to_attachment(
                             else:
                                 yield event(
                                     "status",
-                                    text="Checking schema and quality, training a model, then generating the report…",
+                                    text=(
+                                        "Checking the table, training a model, and writing the notebook…"
+                                        if "advanced" in options.report_levels
+                                        else "Summarizing the table and writing the notebook…"
+                                    ),
                                 )
                                 try:
                                     report = await run_analysis_pipeline(
@@ -278,7 +289,11 @@ def create_attachment_router(
                 options = AttachmentRequest.model_validate_json(
                     raw_options if isinstance(raw_options, str) else "{}"
                 )
-            except ValidationError:
+            except ValidationError as exc:
+                if any(
+                    error["loc"][:1] == ("report_levels",) for error in exc.errors()
+                ):
+                    raise HTTPException(422, REPORT_LEVELS_ERROR) from None
                 raise HTTPException(
                     422,
                     "Select a main model and send a valid chat message with the attachment.",

@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import { test, expect } from '@playwright/test';
 
 test.beforeEach(async ({ page }) => {
@@ -268,7 +269,7 @@ test('accepts an arbitrary attachment and sends it through general chat', async 
     'I cannot read this PDF.',
   );
   await expect(
-    page.getByRole('button', { name: 'Download report' }),
+    page.getByRole('button', { name: 'Download notebook' }),
   ).toHaveCount(0);
   await page.getByRole('button', { name: 'Remove slides.pdf' }).click();
   await expect(page.locator('.attachment')).toHaveCount(0);
@@ -291,14 +292,51 @@ test('uses a separate Report Agent model for a follow-up about the attached tabl
   });
   await expect(reportModel).toHaveValue('');
   await reportModel.selectOption('writer');
+  const basic = page.getByRole('switch', { name: 'Basic', exact: true });
+  const advanced = page.getByRole('switch', { name: 'Advanced', exact: true });
+  await expect(basic).toBeChecked();
+  await expect(basic).toBeDisabled();
+  await expect(advanced).not.toBeChecked();
+  await advanced.click();
+  await expect(basic).toBeEnabled();
+  await basic.click();
+  await expect(basic).not.toBeChecked();
+  await expect(advanced).toBeDisabled();
+  await basic.click();
   await page.reload();
   await settings.click();
   await page.getByRole('tab', { name: 'Tools' }).click();
   await expect(reportModel).toHaveValue('writer');
+  await expect(basic).toBeChecked();
+  await expect(advanced).toBeChecked();
   await page.getByRole('button', { name: 'Close settings' }).click();
   await page.getByRole('button', { name: 'Select model' }).click();
   await page.getByRole('button', { name: 'general', exact: true }).click();
 
+  const png =
+    'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j0xkAAAAASUVORK5CYII=';
+  const notebook = {
+    nbformat: 4,
+    nbformat_minor: 5,
+    metadata: {},
+    cells: [
+      {
+        cell_type: 'markdown',
+        id: 'basic',
+        metadata: { kett_report_mode: 'ollama' },
+        source: '# Basic — Data summary\n\nMean score for grades.csv',
+        attachments: {},
+      },
+      {
+        cell_type: 'markdown',
+        id: 'advanced',
+        metadata: { kett_report_mode: 'ollama' },
+        source:
+          '# Advanced — Regression analysis report\n\n![Chart](attachment:chart.png)',
+        attachments: { 'chart.png': { 'image/png': png } },
+      },
+    ],
+  };
   let requests = 0;
   await page.route('**/api/chat/attachments', async (route) => {
     const body = route.request().postData()!;
@@ -307,18 +345,14 @@ test('uses a separate Report Agent model for a follow-up about the attached tabl
     expect(body).toContain('"model":"general"');
     expect(body).toContain('"report_model":"writer"');
     expect(body).toContain('"mat_enabled":true');
+    expect(body).toContain('"report_levels":["basic","advanced"]');
     const event =
       ++requests === 1
         ? {
             type: 'text',
             text: 'Which column do you want to predict, and which features should I use?',
           }
-        : {
-            type: 'report',
-            mode: 'ollama',
-            report:
-              '## Executive Summary\n\nReport for grades.csv\n\n![Chart](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+j0xkAAAAASUVORK5CYII=)',
-          };
+        : { type: 'report', notebook };
     if (requests === 2) {
       expect(body).toContain('Build a model for this table');
       expect(body).toContain('Predict score using hours');
@@ -340,15 +374,24 @@ test('uses a separate Report Agent model for a follow-up about the attached tabl
   await prompt.fill('Predict score using hours');
   await prompt.press('Enter');
   await expect(
-    page.getByRole('heading', { name: 'Executive Summary' }),
+    page.getByRole('heading', { name: 'Basic — Data summary' }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole('heading', {
+      name: 'Advanced — Regression analysis report',
+    }),
   ).toBeVisible();
   await expect(page.getByRole('img', { name: 'Chart' })).toHaveAttribute(
     'src',
     /^data:image\/png;base64,/,
   );
   const downloaded = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Download report' }).click();
-  expect((await downloaded).suggestedFilename()).toBe('report.md');
+  await page.getByRole('button', { name: 'Download notebook' }).click();
+  const file = await downloaded;
+  expect(file.suggestedFilename()).toBe('report.ipynb');
+  expect(JSON.parse(await readFile(await file.path(), 'utf8'))).toEqual(
+    notebook,
+  );
 });
 
 test('the Tools tab preserves the MAT switch across reloads and sends the preference', async ({
@@ -375,6 +418,7 @@ test('the Tools tab preserves the MAT switch across reloads and sends the prefer
   await expect(
     page.getByRole('combobox', { name: /Report Agent model/ }),
   ).toBeDisabled();
+  await expect(page.getByRole('switch', { name: 'Advanced' })).toBeDisabled();
   await page.reload();
   await settings.click();
   await tools.click();
@@ -393,13 +437,11 @@ test('the Tools tab preserves the MAT switch across reloads and sends the prefer
         JSON.stringify({ type: 'text', text: `Replied ${requests}` }) + '\n',
     });
   });
-  await page
-    .getByLabel('Choose attachments')
-    .setInputFiles({
-      name: 'grades.csv',
-      mimeType: 'text/csv',
-      buffer: Buffer.from('score,hours\n8,1\n'),
-    });
+  await page.getByLabel('Choose attachments').setInputFiles({
+    name: 'grades.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from('score,hours\n8,1\n'),
+  });
   const prompt = page.getByLabel('Message Kett');
   await prompt.fill('What are the columns?');
   await prompt.press('Enter');

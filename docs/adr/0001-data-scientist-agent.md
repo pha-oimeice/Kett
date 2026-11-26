@@ -8,7 +8,7 @@ The Data Scientist Agent is the **Analysis Agent** in the [target multi-agent ar
 | --- | --- |
 | **Supervisor (main chat model)** | Routes requests based on user intent. Inspecting a table does not train a model. If the requested regression target or features are unclear, the Supervisor asks for clarification. |
 | **Data Scientist Agent** | Validates modeling inputs, trains and evaluates the model, and produces charts. It does not use an LLM and has no Ollama model selector. If algorithm selection is added, expose it as **Training algorithm**, separate from LLM settings. |
-| **Report Agent** | Uses the aggregate evidence in `analysis.json` without reading the raw table or training a model. The writing model can be selected independently; code renders the metrics table directly from the evidence. |
+| **Report Agent** | Uses aggregate evidence (`analysis.json` in standalone runs) without reading the raw table or training a model. The writing model can be selected independently; code renders the metrics table directly from the evidence. |
 
 ## Current analysis rules
 
@@ -18,6 +18,6 @@ The Data Scientist Agent is the **Analysis Agent** in the [target multi-agent ar
 
 ## Integration with the analysis tool
 
-The Data Scientist Agent handles the modeling branch. The [Multi-Agent Data Analysis tool](../multi-agent-tool.md) adds separate **Schema Agent** and **Data Quality Agent** modules and combines their evidence with the modeling results before invoking the Report Agent. The standalone Data Scientist Agent still works without those branches. Neither branch requires an LLM setting.
+The Data Scientist Agent handles the modeling branch for Advanced reports. The [Multi-Agent Data Analysis tool](../multi-agent-tool.md) adds separate **Schema Agent** and **Data Quality Agent** modules and combines their evidence with the modeling results before invoking the Report Agent. Basic reports use descriptive statistics without training. The standalone Data Scientist Agent still works without those branches.
 
 Implementation: [training and evaluation](../../backend/app/student_analysis/scientist.py) · [analysis result contract](../../backend/app/student_analysis/contracts.py) · [report generation](../../backend/app/student_analysis/report.py)

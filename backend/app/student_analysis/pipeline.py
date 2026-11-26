@@ -1,21 +1,25 @@
 from pathlib import Path
 
-from .contracts import ANALYSIS_FILE, AnalysisConfig, ReportEvidence
+from .basic import BasicEvidence, describe_table
+from .contracts import AnalysisConfig, ReportEvidence, ReportLevel, ReportLevels
 from .quality import inspect_quality
 from .schema import inspect_schema
 from .scientist import fit_data_scientist, read_dataset
 
 
-def collect_evidence(config: AnalysisConfig, output_dir: Path) -> ReportEvidence:
-    """Run the Schema, Data Quality, and Data Scientist agents on one parsed table."""
+def collect_evidence(
+    config: AnalysisConfig, output_dir: Path, levels: ReportLevels
+) -> dict[ReportLevel, BasicEvidence | ReportEvidence]:
+    """Build separate report inputs from one parsed table, in notebook order."""
     data = read_dataset(config)
-    schema = inspect_schema(data, config)
     quality = inspect_quality(data)
-    analysis = fit_data_scientist(data, config, output_dir)
-    evidence = ReportEvidence(
-        **analysis.model_dump(), schema_evidence=schema, quality_evidence=quality
-    )
-    (output_dir / ANALYSIS_FILE).write_text(
-        evidence.model_dump_json(indent=2) + "\n", encoding="utf-8"
-    )
-    return evidence
+    reports: dict[ReportLevel, BasicEvidence | ReportEvidence] = {}
+    if "basic" in levels:
+        reports["basic"] = describe_table(data, config, quality)
+    if "advanced" in levels:
+        schema = inspect_schema(data, config)
+        analysis = fit_data_scientist(data, config, output_dir)
+        reports["advanced"] = ReportEvidence(
+            **analysis.model_dump(), schema_evidence=schema, quality_evidence=quality
+        )
+    return reports

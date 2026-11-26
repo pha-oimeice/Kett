@@ -1,4 +1,5 @@
 // The Kett backend talks to Ollama and the search service; see backend/app/chat.py.
+import type { ReportLevel, ReportNotebook } from './notebook';
 export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
@@ -13,7 +14,7 @@ export type ChatEvent =
   | { type: 'text'; text: string }
   | { type: 'status'; text: string }
   | { type: 'sources'; sources: Source[] }
-  | { type: 'report'; report: string; mode: 'ollama' | 'template' };
+  | { type: 'report'; notebook: ReportNotebook };
 
 export async function listChatModels(signal?: AbortSignal): Promise<string[]> {
   const response = await fetch('/api/models', { signal, cache: 'no-store' });
@@ -34,7 +35,12 @@ export async function* streamChat(
   messages: ChatMessage[],
   search: boolean,
   signal: AbortSignal,
-  attachment?: { file: File; matEnabled: boolean; reportModel?: string },
+  attachment?: {
+    file: File;
+    matEnabled: boolean;
+    reportModel?: string;
+    reportLevels: ReportLevel[];
+  },
 ): AsyncGenerator<ChatEvent> {
   let response: Response;
   if (attachment) {
@@ -54,6 +60,7 @@ export async function* streamChat(
         messages: recent,
         mat_enabled: attachment.matEnabled,
         report_model: attachment.reportModel,
+        report_levels: attachment.reportLevels,
       }),
     );
     response = await fetch('/api/chat/attachments', {

@@ -700,6 +700,21 @@ button:disabled {
   height: 18px;
   accent-color: var(--accent);
 }
+.report-level-setting {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+.report-level-setting legend {
+  padding: 0;
+}
+.tool-toggle:has(input:disabled) {
+  cursor: default;
+}
 .report-model-setting {
   display: grid;
   gap: 8px;

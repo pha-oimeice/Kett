@@ -1,3 +1,5 @@
+import type { ReportNotebook } from './notebook';
+
 export interface Attachment {
   name: string;
   size: string;
@@ -9,6 +11,7 @@ export interface Message {
   attachments?: Attachment[];
   artifact?: boolean;
   datasetRun?: 'report' | 'error';
+  notebook?: ReportNotebook;
   liked?: boolean;
   sources?: { title: string; url: string }[];
 }

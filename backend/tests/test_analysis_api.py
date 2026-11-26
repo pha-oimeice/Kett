@@ -1,12 +1,12 @@
 import base64
 import json
 import re
+from functools import partial
 
+import httpx
 import pytest
 from app import main
-from app.student_analysis import api
-from app.student_analysis.contracts import AnalysisResult
-from app.student_analysis.report import ReportError
+from app.student_analysis import api, pipeline, report
 from fastapi.testclient import TestClient
 
 ORIGIN = "https://kett.example"
@@ -93,12 +93,19 @@ def test_upload_limits_and_origin(client, monkeypatch):
 
 def test_csv_report_contains_real_metrics_and_portable_charts(client):
     response = upload(
-        client, "report", options=OPTIONS, content=TABLE + b"\n;30;\n0;0;A\n62;31;B"
+        client,
+        "report",
+        options=OPTIONS | {"report_levels": ["advanced"]},
+        content=TABLE + b"\n;30;\n0;0;A\n62;31;B",
     )
     assert response.status_code == 200
-    result = response.json()
-    assert result["mode"] == "template"
-    report = result["report"]
+    notebook = response.json()["notebook"]
+    assert notebook["nbformat"] == 4 and notebook["nbformat_minor"] == 5
+    (cell,) = notebook["cells"]
+    assert cell["cell_type"] == "markdown" and cell["id"] == "advanced"
+    assert cell["metadata"]["kett_report_mode"] == "template"
+    report = cell["source"]
+    assert report.startswith("# Advanced")
     assert "No Ollama model was selected" in report
     assert "exam.csv (33 rows, 3 columns)" in report
     assert "Before the exam" in report
@@ -118,45 +125,111 @@ def test_csv_report_contains_real_metrics_and_portable_charts(client):
         "Limitations",
         "Recommendations",
     ]
-    charts = re.findall(r"data:image/png;base64,([A-Za-z0-9+/=]+)", report)
-    assert len(charts) == 2
-    assert all(
-        base64.b64decode(chart).startswith(b"\x89PNG\r\n\x1a\n") for chart in charts
-    )
+    charts = cell["attachments"]
+    assert set(charts) == {"feature-importance.png", "actual-vs-predicted.png"}
+    for name, payload in charts.items():
+        assert f"](attachment:{name})" in report
+        assert base64.b64decode(payload["image/png"]).startswith(b"\x89PNG\r\n\x1a\n")
 
 
 def test_report_rejects_invalid_columns_and_nonnumeric_targets(client):
     response = upload(client, "report", options=OPTIONS | {"features": ["score"]})
     assert response.status_code == 422
     assert "target column must not be used" in response.json()["detail"]
-    response = upload(client, "report", options=OPTIONS | {"target": "school"})
+    response = upload(
+        client,
+        "report",
+        options=OPTIONS | {"target": "school", "report_levels": ["advanced"]},
+    )
     assert response.status_code == 422
     assert "finite numeric values" in response.json()["detail"]
 
 
-@pytest.mark.parametrize("available", [True, False])
-def test_selected_model_receives_the_analysis_then_temp_files_are_removed(
-    client, monkeypatch, available
+def test_default_basic_report_describes_finite_values_without_training(
+    client, monkeypatch
 ):
-    workspaces = []
+    def unexpected_training(*_):
+        pytest.fail("Basic reports do not train a model")
 
-    def run_agent(path, *, model):
-        assert model == "demo-model"
-        result = AnalysisResult.model_validate_json(path.read_bytes())
-        assert result.evaluation.test_rows == 6
-        workspaces.append(path.parent)
-        if not available:
-            raise ReportError("Off")
-        report = path.with_name("report.md")
-        report.write_text("## Findings\nGenerated using Ollama", encoding="utf-8")
-        return report
-
-    monkeypatch.setattr(api, "run_report_agent", run_agent)
-    response = upload(client, "report", options=OPTIONS | {"model": "demo-model"})
+    monkeypatch.setattr(pipeline, "fit_data_scientist", unexpected_training)
+    response = upload(
+        client,
+        "report",
+        options=OPTIONS | {"features": ["hours", "school"]},
+        content=b"score,hours,school\n1,10,A\n2,,A\n3,inf,B\n5,30,B\n,20,B\n",
+    )
     assert response.status_code == 200
-    result = response.json()
-    assert result["mode"] == ("ollama" if available else "template")
-    assert (
-        "Generated using Ollama" if available else "selected Ollama model could not"
-    ) in result["report"]
-    assert len(workspaces) == 1 and not workspaces[0].exists()
+    (cell,) = response.json()["notebook"]["cells"]
+    assert cell["id"] == "basic"
+    assert cell["attachments"] == {}
+    source = cell["source"]
+    assert source.startswith("# Basic")
+    assert "| Mean | Median | Q1 | Q3 | IQR |" in source
+    assert "| score | 4 | 2.75 | 2.5 | 1.75 | 3.5 | 1.75 |" in source
+    assert "| hours | 3 | 20 | 20 | 15 | 25 | 10 |" in source
+    assert "Not summarized (no usable numeric data): school" in source
+    assert "RMSE" not in source
+
+
+@pytest.mark.parametrize("levels", [[], ["expert"]])
+def test_report_rejects_invalid_levels(client, levels):
+    response = upload(client, "report", options=OPTIONS | {"report_levels": levels})
+    assert response.status_code == 422
+    assert "Select at least one valid report level" in response.json()["detail"]
+
+
+def test_both_reports_share_one_parse_but_use_separate_model_calls(client, monkeypatch):
+    paths = []
+    read_dataset = pipeline.read_dataset
+
+    def read_once(config):
+        paths.append(config.dataset_path)
+        return read_dataset(config)
+
+    calls = []
+
+    def ollama(request):
+        payload = json.loads(request.content)
+        assert payload["model"] == "demo-model"
+        instructions, data = (message["content"] for message in payload["messages"])
+        evidence = json.loads(data)
+        calls.append(evidence)
+        if "statistics" in evidence:
+            assert "plain-English" in instructions
+            assert "evaluation" not in evidence
+            assert evidence["statistics"]["score"]["median"] == 29
+            sections = {
+                section: "Basic narrative from Ollama."
+                for section in report.ReportSections.model_fields
+            }
+            return httpx.Response(
+                200, json={"message": {"content": json.dumps(sections)}}
+            )
+        assert "held-out" in instructions
+        assert evidence["evaluation"]["test_rows"] == 6
+        return httpx.Response(503)
+
+    monkeypatch.setattr(pipeline, "read_dataset", read_once)
+    monkeypatch.setattr(
+        report,
+        "request_sections",
+        partial(report.request_sections, transport=httpx.MockTransport(ollama)),
+    )
+    response = upload(
+        client,
+        "report",
+        options=OPTIONS
+        | {"model": "demo-model", "report_levels": ["advanced", "basic"]},
+    )
+    assert response.status_code == 200
+    assert len(paths) == 1 and not paths[0].parent.exists()
+    assert len(calls) == 2
+    basic, advanced = response.json()["notebook"]["cells"]
+    assert [basic["id"], advanced["id"]] == ["basic", "advanced"]
+    assert basic["metadata"]["kett_report_mode"] == "ollama"
+    assert "Basic narrative from Ollama." in basic["source"]
+    assert "RMSE" not in basic["source"]
+    assert advanced["metadata"]["kett_report_mode"] == "template"
+    assert "selected Ollama model could not" in advanced["source"]
+    assert "Test RMSE" in advanced["source"]
+    assert "Basic narrative from Ollama." not in advanced["source"]

@@ -1,9 +1,13 @@
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, FiniteFloat, model_validator
 
 ANALYSIS_FILE = "analysis.json"
+ReportLevel = Literal["basic", "advanced"]
+ReportLevels = Annotated[frozenset[ReportLevel], Field(min_length=1)]
+DEFAULT_REPORT_LEVELS: ReportLevels = frozenset({"basic"})
+REPORT_LEVELS_ERROR = "Select at least one valid report level: Basic or Advanced."
 
 
 class AnalysisConfig(BaseModel):

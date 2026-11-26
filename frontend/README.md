@@ -32,7 +32,8 @@ npx playwright install chromium
 - Create, switch, search, and delete conversations from the collapsible sidebar. Use `Cmd/Ctrl + K` to search and `Esc` to close a dialog.
 - Press `Enter` to send or `Shift + Enter` for a new line. Pressing Enter during input method composition does not send the message.
 - Select a chat model from the configured Ollama server. Upload an attachment and ask a tool-capable model about it; supported files and report options are listed in the [project README](../README.md#student-performance-analysis).
-- Stop replies, regenerate ordinary chat responses, copy text, or like a response. Read sanitized Markdown and download generated reports or a conversation export.
+- Select Basic, Advanced, or both under **Workspace settings → Tools → Report detail level**. Preview the selected reports in chat, then use **Download notebook** to save them together as `report.ipynb`.
+- Stop replies, regenerate ordinary chat responses, copy text, or like a response. Read sanitized Markdown and download a conversation export.
 - Organize conversations into local projects and switch between light and dark themes. Conversation history and workspace preferences live in browser storage.
 
 Without a selected model, text chat uses the English preset replies in `src/lib/demo.ts`. The **Thinking mode** control is a visual demo, and the downloadable sample HTML is built in. Attachment chat requires a selected model.
@@ -62,6 +63,7 @@ src/
     ├── Icon.svelte   # SVG icons
     ├── demo.ts       # Conversation types and built-in examples
     ├── google-auth.ts # Google sign-in and backend session client
+    ├── notebook.ts    # Report notebook and chat preview
     └── ollama.ts     # Model discovery and streamed chat client
 tests/
 ├── account.spec.ts   # Sign-in and session UI
